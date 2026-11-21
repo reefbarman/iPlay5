@@ -78,6 +78,11 @@ final class FrameGenerator: FrameInterpolator {
 	var motion: MTLTexture? { textures?.flow }
 	/// The last patch motion, before merging
 	var patchMotion: MTLTexture? { textures.map { $0.smoothFields[fieldIndex ^ 1] } }
+	/// Storage format of the motion map (`.rg32Float` or `.rg16Float`).
+	/// Settable for scripts/fgbench's A/B; changing it starts over.
+	var flowFormat: MTLPixelFormat = .rg32Float {
+		didSet { if flowFormat != oldValue { reset() } }
+	}
 
 	init?(device: MTLDevice, library: MTLLibrary) {
 		func make(_ name: String) -> MTLComputePipelineState? {
@@ -210,7 +215,7 @@ final class FrameGenerator: FrameInterpolator {
 		}
 		guard let q0 = texture(.r16Float, qw, qh), let q1 = texture(.r16Float, qw, qh),
 			let g0 = texture(.rgba16Float, qw, qh), let g1 = texture(.rgba16Float, qw, qh),
-			let flow = texture(.rg32Float, qw, qh),
+			let flow = texture(flowFormat, qw, qh),
 			let e0 = texture(.r16Float, ew, eh), let e1 = texture(.r16Float, ew, eh),
 			let coarseField = texture(.rg32Float, Int(coarseCount.x), Int(coarseCount.y)),
 			let fineField = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),

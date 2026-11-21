@@ -3,6 +3,9 @@
 //
 //   scripts/fgbench/run.sh [custom|flyhigh] [--save NAME | --compare NAME] [--iters N]
 //
+// `--flow rg16` stores the custom generator's motion map as rg16Float
+// instead of rg32Float. `--save` / `--compare` also cover its motion fields.
+//
 // Frames are 1920x1080 NV12 (video range): a panning textured background
 // with thin lines, a block moving the other way over it, and a static HUD.
 // The true halfway frame is rendered too, so the PSNR against it is a rough
@@ -155,9 +158,74 @@ let a = upload(frame(0, noise: noiseLevel, seed: 100)), b = upload(frame(1, nois
 let truth = frame(0.5)
 print(String(format: "frames made in %.1f s", Date().timeIntervalSince(t0)))
 
+/// Reads a two-channel float texture (rg32Float or rg16Float) as floats
+func readVectors(_ t: MTLTexture) -> [Float] {
+	precondition(t.pixelFormat == .rg32Float || t.pixelFormat == .rg16Float, "unsupported \(t.pixelFormat)")
+	let half = t.pixelFormat == .rg16Float
+	let desc = MTLTextureDescriptor.texture2DDescriptor(
+		pixelFormat: t.pixelFormat, width: t.width, height: t.height, mipmapped: false)
+	desc.storageMode = .shared
+	let copy = device.makeTexture(descriptor: desc)!
+	let cb = queue.makeCommandBuffer()!
+	let blit = cb.makeBlitCommandEncoder()!
+	blit.copy(from: t, to: copy)
+	blit.endEncoding()
+	cb.commit()
+	cb.waitUntilCompleted()
+	precondition(cb.status == .completed, "readback failed: \(String(describing: cb.error))")
+	let count = t.width * t.height * 2
+	let region = MTLRegionMake2D(0, 0, t.width, t.height)
+	if half {
+		var v = [Float16](repeating: 0, count: count)
+		v.withUnsafeMutableBytes { copy.getBytes($0.baseAddress!, bytesPerRow: t.width * 4, from: region, mipmapLevel: 0) }
+		return v.map { Float($0) }
+	}
+	var v = [Float](repeating: 0, count: count)
+	v.withUnsafeMutableBytes { copy.getBytes($0.baseAddress!, bytesPerRow: t.width * 8, from: region, mipmapLevel: 0) }
+	return v
+}
+
+/// Checks `readVectors` on a small private texture of known signed vectors
+func checkVectorReadback(_ format: MTLPixelFormat) {
+	let (w, h) = (3, 2)
+	let known: [Float] = [-11.5, 3, 0.25, -0.0625, -96, 128, 1.5, -2.75, 0, -0.5, 64.125, -40.25]
+	let staging: MTLTexture = {
+		let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
+		d.storageMode = .shared
+		let t = device.makeTexture(descriptor: d)!
+		let region = MTLRegionMake2D(0, 0, w, h)
+		if format == .rg16Float {
+			let v = known.map { Float16($0) }
+			v.withUnsafeBytes { t.replace(region: region, mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: w * 4) }
+		} else {
+			known.withUnsafeBytes { t.replace(region: region, mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: w * 8) }
+		}
+		return t
+	}()
+	let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: w, height: h, mipmapped: false)
+	d.storageMode = .private
+	let priv = device.makeTexture(descriptor: d)!
+	let cb = queue.makeCommandBuffer()!
+	let blit = cb.makeBlitCommandEncoder()!
+	blit.copy(from: staging, to: priv)
+	blit.endEncoding()
+	cb.commit()
+	cb.waitUntilCompleted()
+	let got = readVectors(priv)
+	precondition(got == known, "\(format) readback mismatch: \(got)")
+}
+
+let flowFormat: MTLPixelFormat = arg("--flow") == "rg16" ? .rg16Float : .rg32Float
 let generator: FrameInterpolator
 switch which {
-case "custom": generator = FrameGenerator(device: device, library: library)!
+case "custom":
+	checkVectorReadback(.rg32Float)
+	checkVectorReadback(.rg16Float)
+	let fg = FrameGenerator(device: device, library: library)!
+	fg.flowFormat = flowFormat
+	generator = fg
+	print("motion map: \(flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), 32-bit float filtering: "
+		+ "\(device.supports32BitFloatFiltering ? "yes" : "NO")")
 default:
 	let fh = FlyHighGenerator(device: device, library: library)!
 	fh.level = Int(arg("--level") ?? "") ?? 0
@@ -209,8 +277,9 @@ cb.waitUntilCompleted()
 let outY = readback(generator.outLuma!), outC = readback(generator.outChroma!)
 
 func median(_ v: [Double]) -> Double { v.sorted()[v.count / 2] }
-print(String(format: "%@: %.2f ms per frame sustained (push %.2f + interpolate %.2f, medians of %d)", which,
-	perFrame, median(pushMs), median(interpMs), pushMs.count))
+func p95(_ v: [Double]) -> Double { v.sorted()[min(v.count - 1, v.count * 95 / 100)] }
+print(String(format: "%@: %.2f ms per frame sustained (push %.2f + interpolate %.2f, medians of %d; interpolate p95 %.2f)",
+	which, perFrame, median(pushMs), median(interpMs), pushMs.count, p95(interpMs)))
 print(String(format: "PSNR vs true halfway frame: luma %.2f dB, chroma %.2f dB (blend of A and B: %.2f dB)",
 	psnr(outY, truth.luma), psnr(outC, truth.chroma),
 	psnr(zip(readback(a.luma), readback(b.luma)).map { UInt8((Int($0) + Int($1) + 1) / 2) }, truth.luma)))
@@ -235,24 +304,13 @@ do {
 		String(format: "%@ %.2f", $0, sums[$0]!.0 / Double(sums[$0]!.1))
 	}.joined(separator: ", "))
 }
-/// Motion error in the open background (true half motion is (-11.5, 3))
-func motionReport(_ t: MTLTexture, _ cell: Double, _ name: String) {
-	let copy = device.makeTexture(descriptor: {
-		let d = MTLTextureDescriptor.texture2DDescriptor(
-			pixelFormat: .rg32Float, width: t.width, height: t.height, mipmapped: false)
-		d.storageMode = .shared
-		return d
-	}())!
-	let cb = queue.makeCommandBuffer()!
-	let blit = cb.makeBlitCommandEncoder()!
-	blit.copy(from: t, to: copy)
-	blit.endEncoding()
-	cb.commit()
-	cb.waitUntilCompleted()
-	var v = [Float](repeating: 0, count: t.width * t.height * 2)
-	v.withUnsafeMutableBytes {
-		copy.getBytes($0.baseAddress!, bytesPerRow: t.width * 8, from: MTLRegionMake2D(0, 0, t.width, t.height), mipmapLevel: 0)
-	}
+/// Motion error in the open background (true half motion is (-11.5, 3)).
+/// Returns the vectors read.
+@discardableResult
+func motionReport(_ t: MTLTexture, _ cell: Double, _ name: String) -> [Float] {
+	let v = readVectors(t)
+	let nonFinite = v.filter { !$0.isFinite }.count
+	if nonFinite > 0 { print("\(name): \(nonFinite) non-finite values") }
 	var errs: [Double] = []
 	for y in 0..<t.height {
 		for x in 0..<t.width {
@@ -265,10 +323,12 @@ func motionReport(_ t: MTLTexture, _ cell: Double, _ name: String) {
 	errs.sort()
 	print(String(format: "%@ background motion error (px): median %.3f, 90%% %.3f, within 0.25: %.1f%%", name,
 		errs[errs.count / 2], errs[errs.count * 9 / 10], Double(errs.filter { $0 <= 0.25 }.count) * 100 / Double(errs.count)))
+	return v
 }
+var patchVectors: [Float] = [], mapVectors: [Float] = []
 if let fg = generator as? FrameGenerator {
-	motionReport(fg.patchMotion!, 16, "patch")
-	motionReport(fg.motion!, 4, "map")
+	patchVectors = motionReport(fg.patchMotion!, 16, "patch")
+	mapVectors = motionReport(fg.motion!, 4, "map")
 }
 savePGM(outY, width, height, "\(which)-luma.pgm")
 // Error against the true frame, x4, as an image (grey = 0)
@@ -303,13 +363,41 @@ if let count = Int(arg("--seq") ?? "") {
 		}
 		prevFrame = f
 	}
-	print(String(format: "sequence of %d: mean PSNR %.2f dB, shimmer (mean error change between frames) %.3f",
-		psnrs.count, psnrs.reduce(0, +) / Double(psnrs.count), flicker.reduce(0, +) / Double(max(flicker.count, 1))))
+	print(String(format: "sequence of %d: mean PSNR %.2f dB (min %.2f), shimmer (mean error change between frames) %.3f",
+		psnrs.count, psnrs.reduce(0, +) / Double(psnrs.count), psnrs.min() ?? 0,
+		flicker.reduce(0, +) / Double(max(flicker.count, 1))))
 }
+
+func floatData(_ v: [Float]) -> Data { v.withUnsafeBytes { Data($0) } }
+func floats(_ d: Data) -> [Float] { d.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) } }
 
 if let name = arg("--save") {
 	try! Data(outY + outC).write(to: outDir.appendingPathComponent("\(name).raw"))
+	if !mapVectors.isEmpty {
+		try! floatData(patchVectors).write(to: outDir.appendingPathComponent("\(name).patch"))
+		try! floatData(mapVectors).write(to: outDir.appendingPathComponent("\(name).map"))
+	}
 	print("saved reference \(name)")
+}
+// Motion fields against a reference run: the patch field should match
+// exactly; the map is compared with the reference rounded to Float16, so a
+// half-precision map only differs by rounding
+if let name = arg("--compare"), !mapVectors.isEmpty,
+	let refPatch = try? Data(contentsOf: outDir.appendingPathComponent("\(name).patch")),
+	let refMap = try? Data(contentsOf: outDir.appendingPathComponent("\(name).map"))
+{
+	let rp = floats(refPatch), rm = floats(refMap)
+	let patchMax = zip(rp, patchVectors).map { abs($0 - $1) }.max() ?? .infinity
+	var mapMax: Float = 0, beyondStep = 0
+	for (r, v) in zip(rm, mapVectors) {
+		let half = Float16(r)
+		let d = abs(Float(half) - v)
+		mapMax = max(mapMax, d)
+		// One half-precision step at this magnitude
+		if d > Float(half.ulp) { beyondStep += 1 }
+	}
+	print(String(format: "motion vs %@: patch max diff %g; map max diff vs Float16(ref) %g, beyond one half step: %d of %d",
+		name, patchMax, mapMax, beyondStep, mapVectors.count))
 }
 if let name = arg("--compare"), let ref = try? Data(contentsOf: outDir.appendingPathComponent("\(name).raw")) {
 	let cur = outY + outC
