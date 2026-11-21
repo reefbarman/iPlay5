@@ -23,6 +23,8 @@ struct StreamView: View {
 	@State private var showSettingsHint = false
 	@State private var showPSButton = false
 	@State private var hidePSButton: Task<Void, Never>?
+	@State private var showFGButton = false
+	@State private var hideFGButton: Task<Void, Never>?
 	@State private var pin = ""
 	@State private var phone = PhoneStatus()
 	@State private var showHeatWarning = false
@@ -62,6 +64,7 @@ struct StreamView: View {
 			guard streaming, !hintShown else { return }
 			hintShown = true
 			flashSettingsHint()
+			revealFGButton()
 		}
 		.onChange(of: phone.isHot) { _, hot in
 			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
@@ -268,8 +271,21 @@ struct StreamView: View {
 
 	// MARK: - Frame generation toggle (bottom right)
 
+	/// Shows the frame generation label, then fades it out like the other corners
+	private func revealFGButton() {
+		withAnimation(.easeOut(duration: 0.2)) { showFGButton = true }
+		hideFGButton?.cancel()
+		hideFGButton = Task { @MainActor in
+			try? await Task.sleep(for: .seconds(3))
+			guard !Task.isCancelled else { return }
+			withAnimation(.easeIn(duration: 0.6)) { showFGButton = false }
+		}
+	}
+
 	/// Cycles Off -> Custom -> FlyHigh. The whole bottom-right corner is the
-	/// button, so a slightly-off tap doesn't land on the touchpad.
+	/// button, so a slightly-off tap doesn't land on the touchpad. The label
+	/// fades out after a few seconds but the corner stays tappable: a tap
+	/// while it's hidden just brings it back, the next one changes the mode.
 	private func frameGenButton(_ session: StreamSession) -> some View {
 		let mode = settingsStore.settings.frameGenMode
 		let (text, colour): (String, Color) =
@@ -279,8 +295,11 @@ struct StreamView: View {
 			case .flyHigh: ("FG AI", .purple.opacity(0.85))
 			}
 		return Button {
-			settingsStore.settings.frameGenMode = mode.next
-			session.apply(settingsStore.settings)
+			if showFGButton {
+				settingsStore.settings.frameGenMode = mode.next
+				session.apply(settingsStore.settings)
+			}
+			revealFGButton()
 		} label: {
 			Text(text)
 				.font(.caption.weight(.bold))
@@ -288,6 +307,7 @@ struct StreamView: View {
 				.padding(.horizontal, 10)
 				.frame(minWidth: 52, minHeight: 30)
 				.background(colour, in: Capsule())
+				.opacity(showFGButton ? 1 : 0)
 				.padding(.bottom, 12)
 				.padding(.trailing, 16)
 				.frame(width: 130, height: 90, alignment: .bottomTrailing)
