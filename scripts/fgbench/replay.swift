@@ -241,13 +241,14 @@ func replay(_ path: String, generator: FrameInterpolator, device: MTLDevice, que
 						shared.getBytes($0.baseAddress!, bytesPerRow: 16, from: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0)
 					}
 				}
-				print("  pair \(r.pair): " + String(format: "dominant %.2f,%.2f (%.0f%%)  ", g[0], g[1], g[2] * 100)
+				print("  pair \(r.pair): "
+					+ String(format: "dominant %.2f,%.2f (%.0f%%) trust %.2f  ", g[0], g[1], g[2] * 100, g[3])
 					+ line.joined(separator: "  "))
 			}
 			// `--dump PAIR`: each stage's motion as a PNG (red = x, green = y,
 			// grey = none, 4 levels per px of half motion)
 			if Int(arg("--dump") ?? "") == r.pair, let fg = generator as? FrameGenerator {
-				for (name, t) in [("coarse", fg.coarseMotion!), ("patch", fg.rawPatchMotion!), ("median", fg.patchMotion!),
+				for (name, t) in [("patch", fg.rawPatchMotion!), ("median", fg.patchMotion!),
 					("map", fg.motion!)]
 				{
 					dumpVectors(readVectors(t), t.width, t.height, out.appendingPathComponent("motion-\(r.pair)-\(name).png"))

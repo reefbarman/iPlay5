@@ -177,7 +177,8 @@ final class FrameGenerator: FrameInterpolator {
 		dispatch(encoder, smoothCoarse, [t.coarseField, t.coarseSmooth], t.coarseSmooth)
 		// One threadgroup for the whole frame (up to 1024 threads, FG_GLOBAL_SAMPLES)
 		encoder.setComputePipelineState(global)
-		encoder.setTextures([t.coarseSmooth, t.globalMotion[fieldIndex]], range: 0..<2)
+		encoder.setTextures(
+			[t.coarseSmooth, t.globalMotion[fieldIndex], t.coarseField, t.eighth[prev], t.eighth[current]], range: 0..<5)
 		encoder.dispatchThreadgroups(
 			MTLSize(width: 1, height: 1, depth: 1),
 			threadsPerThreadgroup: MTLSize(width: min(1024, global.maxTotalThreadsPerThreadgroup), height: 1, depth: 1))
@@ -188,10 +189,11 @@ final class FrameGenerator: FrameInterpolator {
 			t.fineField, count: params.fineCount)
 		dispatch(encoder, smooth, [t.fineField, field], field, count: params.fineCount)
 		dispatch(encoder, densify, [t.quarter[prev], t.quarter[current], field, t.flow], t.flow)
-		dispatch(encoder, synthLuma, [previous.luma, frame.luma, t.flow, t.outLuma], t.outLuma)
+		let global = t.globalMotion[fieldIndex]
+		dispatch(encoder, synthLuma, [previous.luma, frame.luma, t.flow, t.outLuma, global], t.outLuma)
 		dispatch(
 			encoder, synthChroma,
-			[previous.luma, frame.luma, previous.chroma, frame.chroma, t.flow, t.outChroma], t.outChroma)
+			[previous.luma, frame.luma, previous.chroma, frame.chroma, t.flow, t.outChroma, global], t.outChroma)
 		encoder.endEncoding()
 		fieldIndex ^= 1
 		hasPriorField = true
@@ -239,7 +241,7 @@ final class FrameGenerator: FrameInterpolator {
 			let g0 = texture(.rgba16Float, qw, qh), let g1 = texture(.rgba16Float, qw, qh),
 			let flow = texture(flowFormat, qw, qh),
 			let e0 = texture(.r16Float, ew, eh), let e1 = texture(.r16Float, ew, eh),
-			let coarseField = texture(.rg32Float, Int(coarseCount.x), Int(coarseCount.y)),
+			let coarseField = texture(.rgba32Float, Int(coarseCount.x), Int(coarseCount.y)),
 			let coarseSmooth = texture(.rg32Float, Int(coarseCount.x), Int(coarseCount.y)),
 			let fineField = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),
 			let smooth0 = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),
