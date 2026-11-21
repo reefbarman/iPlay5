@@ -24,6 +24,8 @@ struct StreamStats: Equatable {
 	/// In-between frames made and skipped in the last second, and GPU ms per frame
 	var generatedFPS = 0
 	var skippedFrames = 0
+	/// Repeated stream frames dropped in the last second (a 30 fps game in a 60 fps stream)
+	var repeatedFrames = 0
 	var generateMs: Double = 0
 	/// Extra frame generation detail, e.g. FlyHigh's network size or a fallback
 	var frameGenStatus: String?
@@ -64,6 +66,7 @@ final class StreamSession {
 	@ObservationIgnored private var lastDecoded = 0
 	@ObservationIgnored private var lastGenerated = 0
 	@ObservationIgnored private var lastSkipped = 0
+	@ObservationIgnored private var lastRepeated = 0
 	@ObservationIgnored private var lostFrames: Int32 = 0
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
@@ -103,6 +106,7 @@ final class StreamSession {
 		renderer.setPaused(paused)
 		lastGenerated = renderer.generatedFrames
 		lastSkipped = renderer.skippedFrames
+		lastRepeated = renderer.repeatedFrames
 
 		var config = CKSessionConfig()
 		let size = settings.resolution.size
@@ -452,10 +456,12 @@ final class StreamSession {
 			s.frameGenActive = frameGenerationActive
 			s.generatedFPS = renderer.generatedFrames - lastGenerated
 			s.skippedFrames = renderer.skippedFrames - lastSkipped
+			s.repeatedFrames = renderer.repeatedFrames - lastRepeated
 			s.generateMs = renderer.generateMs
 			s.frameGenStatus = renderer.frameGenStatus
 			lastGenerated = renderer.generatedFrames
 			lastSkipped = renderer.skippedFrames
+			lastRepeated = renderer.repeatedFrames
 		}
 		stats = s
 	}

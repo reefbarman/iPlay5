@@ -51,12 +51,18 @@ final class MetalRenderer {
 	private var previous: (luma: CVMetalTexture, chroma: CVMetalTexture)?
 	/// Drawables handed to Core Animation but not on screen yet
 	private var inFlight = 0
+	/// Video thread only: a coarse grid of the last new frame's luma, to spot
+	/// repeats, and how many stream frames ago that frame came
+	private var lastSignature: [UInt8] = []
+	private var framesSinceNew = 1
 
 	/// Frames presented (stats)
 	private(set) var presentedFrames = 0
 	/// Frames made by frame generation, and skipped because we were behind (stats)
 	private(set) var generatedFrames = 0
 	private(set) var skippedFrames = 0
+	/// Repeats of the last frame dropped while generating (a 30 fps game in a 60 fps stream) (stats)
+	private(set) var repeatedFrames = 0
 	/// GPU time to make one in-between frame, smoothed (stats)
 	private(set) var generateMs: Double = 0
 	/// What frame generation is actually running, if it differs from what was picked (stats)
@@ -168,6 +174,8 @@ final class MetalRenderer {
 			previous = nil
 			activeGenerator?.reset()
 			activeGenerator = generator
+			lastSignature = []
+			framesSinceNew = 1
 			lock.withLock { self.generateMs = 0 }
 		}
 		guard !paused, let layer, target.width > 0, target.height > 0, let cache = textureCache else { return }
@@ -177,6 +185,25 @@ final class MetalRenderer {
 			|| pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
 		let fullRange = pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
 			|| pixelFormat == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+
+		// A 30 fps game in a 60 fps stream sends every frame twice. Generating
+		// between a frame and its repeat is wasted (and leaves the output
+		// uneven), so while generating, repeats are dropped and the in-between
+		// goes halfway between the two different frames, spread over the time
+		// the game frame lasts. Up to two repeats in a row (20 fps); after that
+		// the frame counts as new, so a still scene keeps updating.
+		var gap = interval
+		if generator != nil {
+			let signature = Self.lumaSignature(pixelBuffer, tenBit: tenBit)
+			if framesSinceNew < 3, Self.isRepeat(signature, of: lastSignature) {
+				framesSinceNew += 1
+				repeatedFrames += 1
+				return
+			}
+			gap = interval * Double(framesSinceNew)
+			lastSignature = signature
+			framesSinceNew = 1
+		}
 
 		guard let luma = makeTexture(pixelBuffer, plane: 0, format: tenBit ? .r16Unorm : .r8Unorm, cache: cache),
 			let chroma = makeTexture(pixelBuffer, plane: 1, format: tenBit ? .rg16Unorm : .rg8Unorm, cache: cache),
@@ -233,7 +260,7 @@ final class MetalRenderer {
 				// FlyHigh steps its quality down when it can't keep up (e.g. the
 				// phone throttling) and back up when there's room
 				if let flyHigh = generator as? FlyHighGenerator,
-					flyHigh.adapt(generateMs: generateMs, interval: interval)
+					flyHigh.adapt(generateMs: generateMs, interval: gap)
 				{
 					lock.withLock { self.generateMs = 0 }
 				}
@@ -279,12 +306,47 @@ final class MetalRenderer {
 		track(drawable)
 		if generated {
 			// Slightly under half, so a late frame doesn't push every following one later
-			commandBuffer.present(drawable, afterMinimumDuration: interval * 0.45)
+			commandBuffer.present(drawable, afterMinimumDuration: gap * 0.45)
 		} else {
 			commandBuffer.present(drawable)
 		}
 		commandBuffer.commit()
 		presentedFrames += 1
+	}
+
+	/// Luma on a 96x54 grid (8-bit), read straight from the decoded frame
+	private static func lumaSignature(_ pb: CVPixelBuffer, tenBit: Bool) -> [UInt8] {
+		guard CVPixelBufferLockBaseAddress(pb, .readOnly) == kCVReturnSuccess else { return [] }
+		defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+		guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return [] }
+		let w = CVPixelBufferGetWidthOfPlane(pb, 0), h = CVPixelBufferGetHeightOfPlane(pb, 0)
+		let stride = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+		let cols = 96, rows = 54
+		var out = [UInt8](repeating: 0, count: cols * rows)
+		for r in 0..<rows {
+			let row = base.advanced(by: ((r * 2 + 1) * h / (rows * 2)) * stride)
+			for c in 0..<cols {
+				let x = (c * 2 + 1) * w / (cols * 2)
+				// 10-bit samples sit in the top bits of 16
+				out[r * cols + c] =
+					tenBit ? UInt8(row.load(fromByteOffset: x * 2, as: UInt16.self) >> 8) : row.load(fromByteOffset: x, as: UInt8.self)
+			}
+		}
+		return out
+	}
+
+	/// Same picture give or take compression noise: hardly any sample moved
+	/// much. A small thing moving (a character idling) still changes a few
+	/// samples by a lot, so that counts as new.
+	private static func isRepeat(_ a: [UInt8], of b: [UInt8]) -> Bool {
+		guard !a.isEmpty, a.count == b.count else { return false }
+		var big = 0, total = 0
+		for i in 0..<a.count {
+			let d = abs(Int(a[i]) - Int(b[i]))
+			total += d
+			if d > 12 { big += 1 }
+		}
+		return big <= 2 && Double(total) / Double(a.count) < 1.5
 	}
 
 	/// The generator for `mode`, loading FlyHigh the first time. Falls back to

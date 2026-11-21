@@ -558,7 +558,7 @@ private struct StatsOverlay: View {
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
 			if settings.frameGeneration {
 				if stats.frameGenActive {
-					Text(String(format: "%@ +%d fps  %.1f ms  skip %d", settings.frameGenMode == .flyHigh ? "flyhigh" : "frame gen", stats.generatedFPS, stats.generateMs, stats.skippedFrames))
+					Text(String(format: "%@ +%d fps  %.1f ms  skip %d  repeats %d", settings.frameGenMode == .flyHigh ? "flyhigh" : "frame gen", stats.generatedFPS, stats.generateMs, stats.skippedFrames, stats.repeatedFrames))
 					if let status = stats.frameGenStatus { Text(status) }
 				} else {
 					Text("frame gen off: screen too slow")
