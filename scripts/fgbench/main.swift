@@ -1,16 +1,16 @@
-// fgbench: runs the app's frame generators on the Mac's GPU with synthetic
-// frames, to time them and check optimisations don't change the picture.
+// fgbench: runs the app's frame generator on the Mac's GPU with synthetic
+// frames, to time it and check optimisations don't change the picture.
 //
-//   scripts/fgbench/run.sh [custom|flyhigh] [--save NAME | --compare NAME] [--iters N]
+//   scripts/fgbench/run.sh [--save NAME | --compare NAME] [--iters N]
 //
 // `--replay CAPTURE_DIR` runs on a frame capture from the phone instead (see
 // replay.swift).
 //
-// `--flow rg32` stores the custom generator's motion map as rg32Float
+// `--flow rg32` stores the generator's motion map as rg32Float
 // instead of rg16Float. `--save` / `--compare` also cover its motion fields.
 //
-// `--level N` picks the quality level (both generators; they normally step
-// down on their own when the GPU can't keep up).
+// `--level N` picks the quality level (it normally steps down on its own
+// when the GPU can't keep up).
 //
 // Frames are 1920x1080 NV12 (video range): a panning textured background
 // with thin lines, a block moving the other way over it, and a static HUD.
@@ -26,7 +26,7 @@ func arg(_ name: String) -> String? {
 	guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
 	return args[i + 1]
 }
-let which = args.count > 1 && !args[1].hasPrefix("--") ? args[1] : "flyhigh"
+let which = "custom"
 let iterations = Int(arg("--iters") ?? "") ?? 60
 let outDir = URL(fileURLWithPath: arg("--out") ?? "build/fgbench")
 try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
@@ -218,22 +218,14 @@ func checkVectorReadback(_ format: MTLPixelFormat) {
 }
 
 let flowFormat: MTLPixelFormat = arg("--flow") == "rg32" ? .rg32Float : .rg16Float
-let generator: FrameInterpolator
-switch which {
-case "custom":
-	checkVectorReadback(.rg32Float)
-	checkVectorReadback(.rg16Float)
-	let fg = FrameGenerator(device: device, library: library)!
-	fg.flowFormat = flowFormat
-	fg.level = Int(arg("--level") ?? "") ?? 0
-	generator = fg
-	print("motion map: \(flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), level \(fg.level), "
-		+ "32-bit float filtering: \(device.supports32BitFloatFiltering ? "yes" : "NO")")
-default:
-	let fh = FlyHighGenerator(device: device, library: library)!
-	fh.level = Int(arg("--level") ?? "") ?? 0
-	generator = fh
-}
+checkVectorReadback(.rg32Float)
+checkVectorReadback(.rg16Float)
+let fg = FrameGenerator(device: device, library: library)!
+fg.flowFormat = flowFormat
+fg.level = Int(arg("--level") ?? "") ?? 0
+let generator: FrameInterpolator = fg
+print("motion map: \(flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), level \(fg.level), "
+	+ "32-bit float filtering: \(device.supports32BitFloatFiltering ? "yes" : "NO")")
 
 // Real footage from the phone instead of synthetic frames (replay.swift)
 if let dir = arg("--replay") {

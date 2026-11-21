@@ -21,6 +21,7 @@ Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation"
 - **Controllers:** the controller's home/logo button acts as the PS button, and there's an on-screen PS button for controllers that don't have one (or whose button iOS doesn't pass through, like the GameSir G8+). Phone gyro is used for motion controls when your controller has none. Rumble works, and DualSense touchpad, motion and adaptive triggers are passed through (approximate).
 - **Touchscreen as touchpad:** swipe to move a finger (up to two), quick tap to click.
 - **Easy setup:** finds your PS5 on Wi-Fi automatically and follows it if its IP address changes. Sign in to PSN to fill in your account ID (passkeys and password managers work through the Safari option). Wake from rest mode.
+- **Frame generation (experimental):** makes an in-between frame for each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. Tap the bottom-right corner while streaming to turn it on and off and compare.
 - **iPhone Duo:** streams on the inner screen, and the stream stays landscape once it's sideways. On the outer screen you can browse, link and wake consoles. Tap Play there and it connects as soon as you unfold. Folding mid-game pauses the stream.
 
 Local network only. PSN internet play isn't included.
@@ -88,6 +89,5 @@ To build the same unsigned IPA the releases use, run `scripts/package-ipa.sh`, w
 
 - [chiaki-ng](https://github.com/streetpea/chiaki-ng) and the original [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki) did the hard work of the Remote Play protocol. PSN sign-in follows chiaki-ng's flow.
 - Also bundled: [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0), [Opus](https://opus-codec.org) (BSD), and nanopb and jerasure through chiaki-ng.
-- The "FlyHigh" frame generation option runs the FlyHighFG model from [Framegen](https://github.com/MONZikWasTaken/Framegen) by MONZikWasTaken, through a Metal port of the [FlyHigh engine](https://github.com/getflyhigh/flyhigh-engine)'s kernels (Apache-2.0). The model weights in `App/Resources/FlyHigh/` are licensed [CC BY-NC 4.0](App/Resources/FlyHigh/FLYHIGHFG_WEIGHTS_LICENSE.md): fine for this free, open-source app, but any commercial or monetised build needs a separate license from the authors.
 
 iPlay5 is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only), the same as chiaki-ng. If you distribute a modified build, you must make its source available under the same license.

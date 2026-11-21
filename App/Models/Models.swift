@@ -94,27 +94,6 @@ enum DisplayMode: String, Codable, CaseIterable, Identifiable {
 	var label: String { self == .fit ? "Fit" : "Zoom to fill" }
 }
 
-enum FrameGenMode: String, Codable, CaseIterable, Identifiable {
-	case off
-	/// Hand-written block motion search (FrameGen.metal)
-	case custom
-	/// The FlyHighFG neural network, ported from the FlyHigh engine (FlyHigh.metal)
-	case flyHigh
-
-	var id: String { rawValue }
-	var label: String {
-		switch self {
-		case .off: "Off"
-		case .custom: "Custom"
-		case .flyHigh: "FlyHigh (AI)"
-		}
-	}
-	/// The next mode for the quick toggle on the stream screen
-	var next: FrameGenMode {
-		let all = Self.allCases
-		return all[(all.firstIndex(of: self)! + 1) % all.count]
-	}
-}
 
 struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
@@ -132,9 +111,8 @@ struct StreamSettings: Codable, Equatable {
 	var selectIsTouchpad: Bool = false
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
 	var highRefreshDisplay: Bool = true
-	/// Experimental: make an in-between frame for each pair of real ones
-	var frameGenMode: FrameGenMode = .off
-	var frameGeneration: Bool { frameGenMode != .off }
+	/// Experimental: make an in-between frame for each pair of real ones (FrameGen.metal)
+	var frameGeneration: Bool = false
 	/// Debug: a button on the stream that saves the last few seconds of frames
 	var frameCapture: Bool = false
 
@@ -142,6 +120,9 @@ struct StreamSettings: Codable, Equatable {
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
 
 	init() {}
+
+	/// Older builds stored a mode ("off", "custom" or "flyHigh") instead of a switch
+	private enum LegacyKeys: String, CodingKey { case frameGenMode }
 
 	/// Missing keys keep their defaults, so adding a setting doesn't reset the others
 	init(from decoder: Decoder) throws {
@@ -159,7 +140,11 @@ struct StreamSettings: Codable, Equatable {
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
-		frameGenMode = try c.decodeIfPresent(FrameGenMode.self, forKey: .frameGenMode) ?? d.frameGenMode
+		if let on = try c.decodeIfPresent(Bool.self, forKey: .frameGeneration) {
+			frameGeneration = on
+		} else if let mode = try? decoder.container(keyedBy: LegacyKeys.self).decodeIfPresent(String.self, forKey: .frameGenMode) {
+			frameGeneration = mode != "off"
+		}
 		frameCapture = try c.decodeIfPresent(Bool.self, forKey: .frameCapture) ?? d.frameCapture
 	}
 }

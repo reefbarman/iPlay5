@@ -40,14 +40,12 @@ struct StreamSettingsForm: View {
 			if UIScreen.main.maximumFramesPerSecond > 60 {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 			}
-			Picker("Frame generation (experimental)", selection: $settings.frameGenMode) {
-				ForEach(FrameGenMode.allCases) { Text($0.label).tag($0) }
-			}
+			Toggle("Frame generation (experimental)", isOn: $settings.frameGeneration)
 			Toggle("Show stats", isOn: $settings.showStats)
 		} header: {
 			Text("Display")
 		} footer: {
-			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery. Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. FlyHigh uses the FlyHighFG model by the FlyHigh engine authors (CC BY-NC 4.0).")
+			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery. Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. The FG button in the bottom-right corner of the stream turns it on and off.")
 		}
 
 		Section {

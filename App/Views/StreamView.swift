@@ -285,21 +285,16 @@ struct StreamView: View {
 		}
 	}
 
-	/// Cycles Off -> Custom -> FlyHigh. The whole bottom-right corner is the
+	/// Turns frame generation on and off. The whole bottom-right corner is the
 	/// button, so a slightly-off tap doesn't land on the touchpad. The label
 	/// fades out after a few seconds but the corner stays tappable: a tap
-	/// while it's hidden just brings it back, the next one changes the mode.
+	/// while it's hidden just brings it back, the next one toggles it.
 	private func frameGenButton(_ session: StreamSession) -> some View {
-		let mode = settingsStore.settings.frameGenMode
-		let (text, colour): (String, Color) =
-			switch mode {
-			case .off: ("FG off", .black.opacity(0.45))
-			case .custom: ("FG", .green.opacity(0.85))
-			case .flyHigh: ("FG AI", .purple.opacity(0.85))
-			}
+		let on = settingsStore.settings.frameGeneration
+		let (text, colour): (String, Color) = on ? ("FG on", .green.opacity(0.85)) : ("FG off", .black.opacity(0.45))
 		return Button {
 			if showFGButton {
-				settingsStore.settings.frameGenMode = mode.next
+				settingsStore.settings.frameGeneration.toggle()
 				session.apply(settingsStore.settings)
 			}
 			revealFGButton()
@@ -317,7 +312,7 @@ struct StreamView: View {
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
-		.accessibilityLabel("Frame generation: \(mode.label). Tap to change.")
+		.accessibilityLabel("Frame generation \(on ? "on" : "off"). Tap to turn it \(on ? "off" : "on").")
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
 		.ignoresSafeArea()
 	}
@@ -593,7 +588,7 @@ private struct StatsOverlay: View {
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
 			if settings.frameGeneration {
 				if stats.frameGenActive {
-					Text(String(format: "%@ +%d fps  %.1f ms  skip %d  repeats %d", settings.frameGenMode == .flyHigh ? "flyhigh" : "frame gen", stats.generatedFPS, stats.generateMs, stats.skippedFrames, stats.repeatedFrames))
+					Text(String(format: "frame gen +%d fps  %.1f ms  skip %d  repeats %d", stats.generatedFPS, stats.generateMs, stats.skippedFrames, stats.repeatedFrames))
 					if let status = stats.frameGenStatus { Text(status) }
 				} else {
 					Text("frame gen off: screen too slow")

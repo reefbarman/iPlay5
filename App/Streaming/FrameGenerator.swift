@@ -28,7 +28,6 @@ protocol FrameInterpolator: AnyObject {
 	var status: String { get }
 }
 
-extension FlyHighGenerator: FrameInterpolator {}
 
 /// Steps a generator's quality level down when the GPU time per generated
 /// frame is over budget for a while (e.g. the phone throttles as it warms

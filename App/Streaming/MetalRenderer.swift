@@ -37,16 +37,12 @@ final class MetalRenderer {
 	private var paused = false
 
 	// Frame generation (experimental)
-	private var frameGenMode: FrameGenMode = .off
+	private var frameGeneration = false
 	private var frameInterval: CFTimeInterval = 1.0 / 60
-	private let library: MTLLibrary
 	/// Video thread only
-	private let customGenerator: FrameGenerator?
-	/// Video thread only: loaded the first time it's picked
-	private var flyHighGenerator: FlyHighGenerator?
-	private var flyHighFailed = false
-	/// Video thread only: the generator used for the last frame
-	private var activeGenerator: FrameInterpolator?
+	private let frameGenerator: FrameGenerator?
+	/// Video thread only: the generator used for the last frame (nil when off)
+	private var activeGenerator: FrameGenerator?
 	/// Video thread only: the last real frame, kept for the next in-between
 	private var previous: (luma: CVMetalTexture, chroma: CVMetalTexture)?
 	/// Drawables handed to Core Animation but not on screen yet
@@ -75,7 +71,7 @@ final class MetalRenderer {
 	private(set) var gapFrames = 0
 	/// GPU time to make one in-between frame, smoothed (stats)
 	private(set) var generateMs: Double = 0
-	/// What frame generation is actually running, if it differs from what was picked (stats)
+	/// Frame generation's quality level when it's stepped down (stats)
 	private(set) var frameGenStatus: String?
 	/// The screen's current refresh rate, from the display link (stats)
 	var displayHz: Double = 0
@@ -87,9 +83,8 @@ final class MetalRenderer {
 		else { return nil }
 		self.device = device
 		self.queue = queue
-		self.library = library
-		customGenerator = FrameGenerator(device: device, library: library)
-		if customGenerator == nil { log.error("Frame generation shaders failed to load") }
+		frameGenerator = FrameGenerator(device: device, library: library)
+		if frameGenerator == nil { log.error("Frame generation shaders failed to load") }
 
 		func pipeline(_ format: MTLPixelFormat) -> MTLRenderPipelineState? {
 			let desc = MTLRenderPipelineDescriptor()
@@ -118,14 +113,14 @@ final class MetalRenderer {
 
 	/// Frame generation should only be on when the screen can show twice `fps`
 	func configure(
-		hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGen: FrameGenMode, fps: Int, frameCapture: Bool
+		hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGeneration: Bool, fps: Int, frameCapture: Bool
 	) {
 		let changed = lock.withLock { () -> Bool in
 			let changed = self.hdrOutput != hdr
 			self.hdrOutput = hdr
 			self.displayMode = displayMode
 			self.bicubic = bicubic
-			self.frameGenMode = frameGen
+			self.frameGeneration = frameGeneration
 			self.frameInterval = 1.0 / Double(max(fps, 1))
 			if frameCapture, capture == nil {
 				capture = FrameCapture(device: device)
@@ -195,14 +190,14 @@ final class MetalRenderer {
 		let mode = displayMode
 		let bicubic = self.bicubic
 		let paused = self.paused
-		let frameGenMode = self.frameGenMode
+		let frameGeneration = self.frameGeneration
 		let interval = frameInterval
 		let inFlight = self.inFlight
 		let generateMs = self.generateMs
 		let capture = self.capture
 		lock.unlock()
 
-		let generator = paused ? nil : pickGenerator(frameGenMode)
+		let generator = paused ? nil : pickGenerator(frameGeneration)
 		if generator !== activeGenerator {
 			previous = nil
 			activeGenerator?.reset()
@@ -214,14 +209,10 @@ final class MetalRenderer {
 			lock.withLock { self.generateMs = 0 }
 		}
 		if let capture {
-			let name: String
-			if let custom = generator as? FrameGenerator {
-				name = "custom (motion map \(custom.flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), level \(custom.level))"
-			} else if let flyHigh = generator as? FlyHighGenerator {
-				name = "flyhigh \(flyHigh.status)"
-			} else {
-				name = "off"
-			}
+			let name =
+				generator.map {
+					"custom (motion map \($0.flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), level \($0.level))"
+				} ?? "off"
 			capture.frameStart(generator: name, streamFps: Int((1 / interval).rounded()))
 		}
 		guard !paused, let layer, target.width > 0, target.height > 0, let cache = textureCache else { return }
@@ -426,30 +417,10 @@ final class MetalRenderer {
 		return big <= 2 && Double(total) / Double(a.count) < 1.5
 	}
 
-	/// The generator for `mode`, loading FlyHigh the first time. Falls back to
-	/// the custom one if FlyHigh can't load. Video thread only.
-	private func pickGenerator(_ mode: FrameGenMode) -> FrameInterpolator? {
-		var status: String?
-		var picked: FrameInterpolator?
-		switch mode {
-		case .off:
-			picked = nil
-		case .custom:
-			picked = customGenerator
-			if let customGenerator, !customGenerator.status.isEmpty { status = "quality \(customGenerator.status)" }
-		case .flyHigh:
-			if flyHighGenerator == nil, !flyHighFailed {
-				flyHighGenerator = FlyHighGenerator(device: device, library: library)
-				flyHighFailed = flyHighGenerator == nil
-			}
-			if let flyHighGenerator {
-				picked = flyHighGenerator
-				status = flyHighGenerator.status.isEmpty ? nil : "network \(flyHighGenerator.status)"
-			} else {
-				picked = customGenerator
-				status = "flyhigh failed, using frame gen"
-			}
-		}
+	/// The generator to use, or nil when frame generation is off. Video thread only.
+	private func pickGenerator(_ on: Bool) -> FrameGenerator? {
+		let picked = on ? frameGenerator : nil
+		let status = picked.flatMap { $0.status.isEmpty ? nil : "quality \($0.status)" }
 		if status != frameGenStatus { lock.withLock { frameGenStatus = status } }
 		return picked
 	}

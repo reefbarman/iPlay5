@@ -27,7 +27,7 @@ struct StreamStats: Equatable {
 	/// Repeated stream frames dropped in the last second (a 30 fps game in a 60 fps stream)
 	var repeatedFrames = 0
 	var generateMs: Double = 0
-	/// Extra frame generation detail, e.g. FlyHigh's network size or a fallback
+	/// Extra frame generation detail, e.g. a stepped-down quality level
 	var frameGenStatus: String?
 }
 
@@ -257,7 +257,7 @@ final class StreamSession {
 	private func configureRenderer() {
 		renderer?.configure(
 			hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling,
-			frameGen: frameGenerationActive ? settings.frameGenMode : .off, fps: settings.fps,
+			frameGeneration: frameGenerationActive, fps: settings.fps,
 			frameCapture: settings.frameCapture)
 	}
 
