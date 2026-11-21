@@ -3,13 +3,19 @@ using namespace metal;
 
 // Custom frame generation: makes the picture halfway between two decoded frames.
 //
-// 1. Each frame's luma is shrunk to 1/4 and 1/8 size.
-// 2. Motion is searched on the 1/8 copy in 32 px blocks, then refined on the
-//    1/4 copy in 16 px blocks and cleaned up with a median filter.
-// 3. Every output pixel looks back along the motion into the previous frame and
-//    forward into the current one, and blends the two. Of the nearby motion
-//    vectors (and "no motion", which keeps HUDs still), the ones whose two
-//    samples agree best get the most weight.
+// 1. Each frame's luma is shrunk to 1/4 and 1/8 size, and the 1/4 copy's
+//    gradients are worked out.
+// 2. Motion is searched on the 1/8 copy in 32 px blocks. Overlapping 32 px
+//    patches on the 1/4 copy pick the best nearby vector, then slide to the
+//    exact (sub-pixel) fit with a few Lucas-Kanade steps, and a median filter
+//    removes stray ones.
+// 3. The patches are merged into a motion map with one vector per 1/4 pixel:
+//    each pixel takes mostly the vectors of the patches it fits best, so the
+//    motion follows object edges instead of block edges.
+// 4. Every output pixel looks back along the motion into the previous frame and
+//    forward into the current one, and blends the two. Of the motion there,
+//    the motion a few pixels away (for edges) and "no motion" (keeps HUDs
+//    still), the ones whose two samples agree best get the most weight.
 //
 // Motion is stored as the half motion `d`, in full-size luma pixels: a point
 // at `p` in the generated frame was at `p - d` in the previous frame and is at
@@ -29,8 +35,8 @@ constexpr sampler fgLinear(filter::linear, address::clamp_to_edge, coord::normal
 
 
 constant int FG_BLOCK = 4;          // block size in the shrunk images
-constant int FG_COARSE_RANGE = 8;   // 1/8 px each way: up to 128 full px of motion per frame
-constant float FG_FINE_BLOCK = 16.0;
+constant int FG_COARSE_RANGE = 6;   // 1/8 px each way per frame: up to 96 full px of motion per frame
+
 constant float FG_NEWER_WEIGHT = 0.75;  // share of the newer frame in the blend
 
 // MARK: - Shrinking
@@ -50,6 +56,18 @@ kernel void fg_reduce4(texture2d<float, access::sample> src [[texture(0)]],
 	dst.write(float4(s * 0.25), gid);
 }
 
+// 1/4 size luma -> (luma, d/dx, d/dy), for the Lucas-Kanade steps
+kernel void fg_gradient(texture2d<float, access::read> src [[texture(0)]],
+                        texture2d<float, access::write> dst [[texture(1)]],
+                        uint2 gid [[thread_position_in_grid]]) {
+	int w = src.get_width(), h = src.get_height();
+	if (int(gid.x) >= w || int(gid.y) >= h) return;
+	int2 c = int2(gid);
+	float l = src.read(uint2(max(c.x - 1, 0), c.y)).r, r = src.read(uint2(min(c.x + 1, w - 1), c.y)).r;
+	float u = src.read(uint2(c.x, max(c.y - 1, 0))).r, d = src.read(uint2(c.x, min(c.y + 1, h - 1))).r;
+	dst.write(float4(src.read(gid).r, (r - l) * 0.5, (d - u) * 0.5, 0), gid);
+}
+
 // 1/4 -> 1/8 size
 kernel void fg_reduce2(texture2d<float, access::sample> src [[texture(0)]],
                        texture2d<float, access::write> dst [[texture(1)]],
@@ -67,11 +85,16 @@ static float fg_read(texture2d<float, access::read> t, int2 c) {
 	return t.read(uint2(c)).r;
 }
 
-// Exhaustive symmetric search on the 1/8 images, one 4x4 block (+1 px border)
-// per threadgroup: the block's neighbourhood in both images is copied to
-// threadgroup memory, each thread tries some of the 17 x 17 candidates, and
-// the best (first in row order on a tie) wins.
-constant int FG_COARSE_SPAN = 2 * FG_COARSE_RANGE + 1;
+// Exhaustive search on the 1/8 images, one 4x4 block (+1 px border) per
+// threadgroup: the block's neighbourhood in both images is copied to
+// threadgroup memory, each thread tries some of the 25 x 25 candidates, and
+// the best (first in row order on a tie) wins. Candidates are whole 1/8 px
+// of total motion D, split as evenly as possible between the two frames
+// (previous at -floor(D/2), current at +ceil(D/2)). Moving each frame by the
+// same whole number instead only covers even motion, 16 full px apart: a
+// 23 px pan was 7 px off either way, enough for many blocks to lock on to
+// something else.
+constant int FG_COARSE_SPAN = 4 * FG_COARSE_RANGE + 1;
 constant int FG_COARSE_TILE = FG_BLOCK + 2 + 2 * FG_COARSE_RANGE;  // -1 - range ... BLOCK + range
 constant uint FG_COARSE_THREADS = 128;
 
@@ -98,12 +121,14 @@ kernel void fg_coarse(texture2d<float, access::read> prev [[texture(0)]],
 	float best = INFINITY;
 	int bestI = 0;
 	for (int c = int(tid); c < FG_COARSE_SPAN * FG_COARSE_SPAN; c += int(FG_COARSE_THREADS)) {
-		int dy = c / FG_COARSE_SPAN - FG_COARSE_RANGE, dx = c % FG_COARSE_SPAN - FG_COARSE_RANGE;
+		int2 total = int2(c % FG_COARSE_SPAN, c / FG_COARSE_SPAN) - 2 * FG_COARSE_RANGE;
+		int2 back = total >> 1;          // floor(D/2)
+		int2 fwd = total - back;         // ceil(D/2)
 		// Prefer small motion when the match is about as good
-		float sad = 0.02 * float(abs(dx) + abs(dy));
+		float sad = 0.01 * float(abs(total.x) + abs(total.y));
 		for (int y = -1; y <= FG_BLOCK; y++) {
-			int rp = (y - dy + 1 + FG_COARSE_RANGE) * FG_COARSE_TILE + 1 + FG_COARSE_RANGE - dx;
-			int rc = (y + dy + 1 + FG_COARSE_RANGE) * FG_COARSE_TILE + 1 + FG_COARSE_RANGE + dx;
+			int rp = (y - back.y + 1 + FG_COARSE_RANGE) * FG_COARSE_TILE + 1 + FG_COARSE_RANGE - back.x;
+			int rc = (y + fwd.y + 1 + FG_COARSE_RANGE) * FG_COARSE_TILE + 1 + FG_COARSE_RANGE + fwd.x;
 			for (int x = -1; x <= FG_BLOCK; x++) sad += abs(tp[rp + x] - tc[rc + x]);
 		}
 		if (sad < best) {
@@ -121,8 +146,8 @@ kernel void fg_coarse(texture2d<float, access::read> prev [[texture(0)]],
 			bestI = bestIndex[i];
 		}
 	}
-	int2 d = int2(bestI % FG_COARSE_SPAN, bestI / FG_COARSE_SPAN) - FG_COARSE_RANGE;
-	field.write(float4(float2(d) * 8.0, 0, 0), block);
+	int2 total = int2(bestI % FG_COARSE_SPAN, bestI / FG_COARSE_SPAN) - 2 * FG_COARSE_RANGE;
+	field.write(float4(float2(total) * 4.0, 0, 0), block);
 }
 
 // `prior` is last pair's motion for this block. Flat areas (pole and trunk
@@ -144,13 +169,25 @@ static float fg_fine_cost(texture2d<float, access::sample> prev, texture2d<float
 	return sad;
 }
 
-// 16 px blocks on the 1/4 images: pick the best of zero, last pair's vector and
-// the nearby coarse vectors, then a small sub-pixel step search around it
+constant int FG_PATCH_LO = -2, FG_PATCH_HI = 6;  // patch rows/columns around each 4x4 block (8x8)
+constant int FG_LK_STEPS = 3;
+constant float FG_LK_PRIOR = 2e-4;  // pull towards last pair's vector: wins in flat areas only
+constant float FG_LK_HUBER = 0.04;  // residuals above this count less (edges of other objects)
+
+// Patches every 16 full px, each 32 px square, on the 1/4 images: pick the best
+// of zero, last pair's vector and the nearby coarse vectors, then Lucas-Kanade
+// (Gauss-Newton) steps on both frames at once: moving the previous frame's
+// sample back and the current one's forward by the same amount, solve for the
+// change that makes them match. That lands on sub-pixel motion directly,
+// where a step search only gets as close as its smallest step and can stop on
+// a different near-tie each frame.
 kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
                     texture2d<float, access::sample> curr [[texture(1)]],
                     texture2d<float, access::read> coarse [[texture(2)]],
                     texture2d<float, access::write> field [[texture(3)]],
                     texture2d<float, access::read> priorField [[texture(4)]],
+                    texture2d<float, access::sample> prevG [[texture(5)]],
+                    texture2d<float, access::sample> currG [[texture(6)]],
                     constant FGParams &p [[buffer(0)]],
                     constant int &hasPrior [[buffer(1)]],
                     uint2 gid [[thread_position_in_grid]]) {
@@ -180,22 +217,35 @@ kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
 		}
 	}
 
-	// Step search: 4, 2, 1, 1/2, 1/4 full px. Stopping at whole pixels left
-	// motion up to half a pixel off, so each frame lands up to a pixel apart
-	// from the other in the blend: textures (terrain, signs) came out soft or
-	// doubled in different places every frame, which shows as shimmer.
-	for (float step = 4.0; step >= 0.25; step *= 0.5) {
-		float2 centre = bestD;
-		const float2 dirs[4] = { float2(step, 0), float2(-step, 0), float2(0, step), float2(0, -step) };
-		for (int i = 0; i < 4; i++) {
-			float2 d = centre + dirs[i];
-			float cost = fg_fine_cost(prev, curr, base, d, prior, p.quarterSize);
-			if (cost < best) {
-				best = cost;
-				bestD = d;
+	// Gauss-Newton on r = curr(q + d/4) - prev(q - d/4), d in full px
+	float2 inv = 1.0 / p.quarterSize;
+	float2 anchor = hasPrior ? prior : bestD;
+	float2 d = bestD;
+	for (int step = 0; step < FG_LK_STEPS; step++) {
+		float2 dq = d * 0.25;
+		float3 h = 0;  // xx, xy, yy
+		float2 g = 0;
+		for (int y = FG_PATCH_LO; y < FG_PATCH_HI; y++) {
+			for (int x = FG_PATCH_LO; x < FG_PATCH_HI; x++) {
+				float2 q = base + float2(x, y) + 0.5;
+				float3 a = prevG.sample(fgLinear, (q - dq) * inv).rgb;
+				float3 b = currG.sample(fgLinear, (q + dq) * inv).rgb;
+				float r = b.x - a.x;
+				float2 j = (a.yz + b.yz) * 0.25;
+				float w = FG_LK_HUBER / max(FG_LK_HUBER, abs(r));
+				h += w * float3(j.x * j.x, j.x * j.y, j.y * j.y);
+				g += w * j * r;
 			}
 		}
+		h.xz += FG_LK_PRIOR;
+		g += FG_LK_PRIOR * (d - anchor);
+		float det = h.x * h.z - h.y * h.y;
+		float2 delta = -float2(h.z * g.x - h.y * g.y, h.x * g.y - h.y * g.x) / det;
+		d += clamp(delta, -4.0, 4.0);
 	}
+	// Keep it only if it's really better: a step can run off on a patch
+	// that's mostly another moving object
+	if (fg_fine_cost(prev, curr, base, d, prior, p.quarterSize) < best) bestD = d;
 	field.write(float4(bestD, 0, 0), gid);
 }
 
@@ -229,10 +279,50 @@ kernel void fg_smooth(texture2d<float, access::read> src [[texture(0)]],
 	dst.write(float4(bestV, 0, 0), gid);
 }
 
+// One vector per 1/4 pixel from the patches around it: each patch's vector,
+// weighted by how close the pixel is to the patch centre and by how well that
+// vector fits at this pixel. So where two objects meet, each side takes the
+// motion of the patches that fit it, and the map stays smooth elsewhere.
+kernel void fg_densify(texture2d<float, access::sample> prev [[texture(0)]],
+                       texture2d<float, access::sample> curr [[texture(1)]],
+                       texture2d<float, access::read> field [[texture(2)]],
+                       texture2d<float, access::write> flow [[texture(3)]],
+                       constant FGParams &p [[buffer(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+	if (gid.x >= flow.get_width() || gid.y >= flow.get_height()) return;
+	float2 inv = 1.0 / p.quarterSize;
+	float2 q = float2(gid) + 0.5;
+	// Patch centres are at 4i + 2
+	int2 i0 = int2(floor((q - 2.0) * 0.25));
+	float2 sum = 0;
+	float wsum = 0;
+	for (int y = -1; y <= 2; y++) {
+		for (int x = -1; x <= 2; x++) {
+			int2 i = i0 + int2(x, y);
+			float2 tent = max(0.0, 1.0 - abs(q - (float2(i) * 4.0 + 2.0)) / 6.0);
+			float sw = tent.x * tent.y;
+			if (sw <= 0) continue;
+			float2 d = field.read(uint2(clamp(i, int2(0), p.fineCount - 1))).xy;
+			float2 dq = d * 0.25;
+			float e = abs(prev.sample(fgLinear, (q - dq) * inv).r - curr.sample(fgLinear, (q + dq) * inv).r)
+			        + abs(prev.sample(fgLinear, (q - dq - 0.5) * inv).r - curr.sample(fgLinear, (q + dq - 0.5) * inv).r)
+			        + abs(prev.sample(fgLinear, (q - dq + 0.5) * inv).r - curr.sample(fgLinear, (q + dq + 0.5) * inv).r);
+			float w = sw / (e * (1.0 / 3.0) + 0.01);
+			sum += w * d;
+			wsum += w;
+		}
+	}
+	flow.write(float4(wsum > 0 ? sum / wsum : float2(0), 0, 0), gid);
+}
+
 // MARK: - Synthesis
 
-// Candidate weights for the pixel at full-size luma position `pos`, from the 4
-// nearest block vectors plus zero motion.
+constant int FG_CANDIDATES = 6;
+constant float FG_EDGE_REACH = 8.0;  // full px: where the other side of an edge's motion is read
+
+// Candidate weights for the pixel at full-size luma position `pos`: the motion
+// map here, the motion map a little way off in each direction (at an object's
+// edge, one of those has the pure motion of each side) and zero motion.
 //
 // Thin detail (power lines, fences, text) is where this goes wrong: if the
 // motion is a little off, blending the two frames gives two faint copies of a
@@ -244,11 +334,11 @@ kernel void fg_smooth(texture2d<float, access::read> src [[texture(0)]],
 // - where the two frames disagree along a candidate, it uses the current
 //   frame's pixel alone instead of a half-and-half mix.
 struct FGCandidates {
-	float2 d[5];
-	float w[5];
-	float agree[5];  // 1 where the two frames match along the candidate, 0 where they don't
-	float y[5];      // luma along each candidate
-	float cur[5];    // the newer frame's luma alone along each candidate
+	float2 d[FG_CANDIDATES];
+	float w[FG_CANDIDATES];
+	float agree[FG_CANDIDATES];  // 1 where the two frames match along the candidate, 0 where they don't
+	float y[FG_CANDIDATES];      // luma along each candidate
+	float cur[FG_CANDIDATES];    // the newer frame's luma alone along each candidate
 	// How well the best candidate fits, 0...1. Where nothing fits (wheels
 	// spinning, things changing shape), any blend lands detail in a different
 	// wrong place each frame, which flickers. There we use the newer frame
@@ -257,23 +347,21 @@ struct FGCandidates {
 };
 
 static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, texture2d<float, access::sample> currY,
-                                  texture2d<float, access::read> field, float2 pos, constant FGParams &p) {
+                                  texture2d<float, access::sample> flow, float2 pos, constant FGParams &p) {
 	FGCandidates c;
 	float2 inv = 1.0 / p.lumaSize;
-	float2 f = pos / FG_FINE_BLOCK - 0.5;
-	float2 f0 = floor(f);
-	float2 t = f - f0;
-	int2 i0 = int2(f0);
-	float cost[5];
-	float bw[5];
+	const float2 offsets[4] = { float2(FG_EDGE_REACH, 0), float2(-FG_EDGE_REACH, 0),
+	                            float2(0, FG_EDGE_REACH), float2(0, -FG_EDGE_REACH) };
+	float cost[FG_CANDIDATES];
+	float bw[FG_CANDIDATES];
 	float minCost = INFINITY;
-	for (int j = 0; j < 5; j++) {
-		if (j < 4) {
-			int2 o = int2(j & 1, j >> 1);
-			int2 cell = clamp(i0 + o, int2(0), p.fineCount - 1);
-			c.d[j] = field.read(uint2(cell)).xy;
-			float2 wt = mix(1.0 - t, t, float2(o));
-			bw[j] = wt.x * wt.y + 0.02;
+	for (int j = 0; j < FG_CANDIDATES; j++) {
+		if (j == 0) {
+			c.d[j] = flow.sample(fgLinear, pos * inv).xy;
+			bw[j] = 1.0;
+		} else if (j < 5) {
+			c.d[j] = flow.sample(fgLinear, (pos + offsets[j - 1]) * inv).xy;
+			bw[j] = 0.15;
 		} else {
 			// Zero motion: keeps HUDs and other static overlays in place
 			c.d[j] = float2(0);
@@ -298,7 +386,7 @@ static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, textur
 		c.y[j] = mix(b, mix(a, b, FG_NEWER_WEIGHT), c.agree[j]);
 		c.cur[j] = b;
 	}
-	for (int j = 0; j < 5; j++) {
+	for (int j = 0; j < FG_CANDIDATES; j++) {
 		c.w[j] = bw[j] * exp(-(cost[j] - minCost) * 60.0) + 1e-6;
 	}
 	c.confidence = 1.0 - smoothstep(0.03, 0.09, minCost);
@@ -308,15 +396,15 @@ static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, textur
 
 kernel void fg_synth_luma(texture2d<float, access::sample> prevY [[texture(0)]],
                           texture2d<float, access::sample> currY [[texture(1)]],
-                          texture2d<float, access::read> field [[texture(2)]],
+                          texture2d<float, access::sample> flow [[texture(2)]],
                           texture2d<float, access::write> outY [[texture(3)]],
                           constant FGParams &p [[buffer(0)]],
                           uint2 gid [[thread_position_in_grid]]) {
 	if (gid.x >= outY.get_width() || gid.y >= outY.get_height()) return;
 	float2 pos = float2(gid) + 0.5;
-	FGCandidates c = fg_candidates(prevY, currY, field, pos, p);
+	FGCandidates c = fg_candidates(prevY, currY, flow, pos, p);
 	float sum = 0, held = 0, wsum = 0;
-	for (int j = 0; j < 5; j++) {
+	for (int j = 0; j < FG_CANDIDATES; j++) {
 		sum += c.w[j] * c.y[j];
 		held += c.w[j] * c.cur[j];
 		wsum += c.w[j];
@@ -328,18 +416,18 @@ kernel void fg_synth_chroma(texture2d<float, access::sample> prevY [[texture(0)]
                             texture2d<float, access::sample> currY [[texture(1)]],
                             texture2d<float, access::sample> prevC [[texture(2)]],
                             texture2d<float, access::sample> currC [[texture(3)]],
-                            texture2d<float, access::read> field [[texture(4)]],
+                            texture2d<float, access::sample> flow [[texture(4)]],
                             texture2d<float, access::write> outC [[texture(5)]],
                             constant FGParams &p [[buffer(0)]],
                             uint2 gid [[thread_position_in_grid]]) {
 	if (gid.x >= outC.get_width() || gid.y >= outC.get_height()) return;
 	float2 posC = float2(gid) + 0.5;
 	float2 scale = p.lumaSize / p.chromaSize;
-	FGCandidates c = fg_candidates(prevY, currY, field, posC * scale, p);
+	FGCandidates c = fg_candidates(prevY, currY, flow, posC * scale, p);
 	float2 inv = 1.0 / p.chromaSize;
 	float2 sum = 0, held = 0;
 	float wsum = 0;
-	for (int j = 0; j < 5; j++) {
+	for (int j = 0; j < FG_CANDIDATES; j++) {
 		float2 dc = c.d[j] / scale;
 		float2 a = prevC.sample(fgLinear, (posC - dc) * inv).rg;
 		float2 b = currC.sample(fgLinear, (posC + dc) * inv).rg;

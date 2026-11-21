@@ -214,10 +214,98 @@ print(String(format: "%@: %.2f ms per frame sustained (push %.2f + interpolate %
 print(String(format: "PSNR vs true halfway frame: luma %.2f dB, chroma %.2f dB (blend of A and B: %.2f dB)",
 	psnr(outY, truth.luma), psnr(outC, truth.chroma),
 	psnr(zip(readback(a.luma), readback(b.luma)).map { UInt8((Int($0) + Int($1) + 1) / 2) }, truth.luma)))
+// Where the error is: the moving block's edges (things uncovered/covered),
+// inside it, the HUD, and the open background
+do {
+	var sums = [String: (Double, Int)]()
+	let ox = 715.5, oy = 415.5  // block position at t = 0.5
+	for y in 0..<height {
+		for x in 0..<width {
+			let fx = Double(x) + 0.5, fy = Double(y) + 0.5
+			let inside = fx >= ox && fx < ox + 420 && fy >= oy && fy < oy + 180
+			let near = fx >= ox - 24 && fx < ox + 444 && fy >= oy - 24 && fy < oy + 204
+			let nearInner = fx >= ox + 24 && fx < ox + 396 && fy >= oy + 24 && fy < oy + 156
+			let region = y < 60 && x < 500 ? "hud" : (near && !nearInner ? "edges" : (inside ? "block" : "background"))
+			let e = abs(Double(outY[y * width + x]) - Double(truth.luma[y * width + x]))
+			let s = sums[region] ?? (0, 0)
+			sums[region] = (s.0 + e, s.1 + 1)
+		}
+	}
+	print("mean abs error: " + ["background", "block", "edges", "hud"].map {
+		String(format: "%@ %.2f", $0, sums[$0]!.0 / Double(sums[$0]!.1))
+	}.joined(separator: ", "))
+}
+/// Motion error in the open background (true half motion is (-11.5, 3))
+func motionReport(_ t: MTLTexture, _ cell: Double, _ name: String) {
+	let copy = device.makeTexture(descriptor: {
+		let d = MTLTextureDescriptor.texture2DDescriptor(
+			pixelFormat: .rg32Float, width: t.width, height: t.height, mipmapped: false)
+		d.storageMode = .shared
+		return d
+	}())!
+	let cb = queue.makeCommandBuffer()!
+	let blit = cb.makeBlitCommandEncoder()!
+	blit.copy(from: t, to: copy)
+	blit.endEncoding()
+	cb.commit()
+	cb.waitUntilCompleted()
+	var v = [Float](repeating: 0, count: t.width * t.height * 2)
+	v.withUnsafeMutableBytes {
+		copy.getBytes($0.baseAddress!, bytesPerRow: t.width * 8, from: MTLRegionMake2D(0, 0, t.width, t.height), mipmapLevel: 0)
+	}
+	var errs: [Double] = []
+	for y in 0..<t.height {
+		for x in 0..<t.width {
+			let fx = (Double(x) + 0.5) * cell, fy = (Double(y) + 0.5) * cell
+			if fy < 100 || (fx > 650 && fx < 1200 && fy > 350 && fy < 650) { continue }
+			let i = (y * t.width + x) * 2
+			errs.append(abs(Double(v[i]) + 11.5) + abs(Double(v[i + 1]) - 3))
+		}
+	}
+	errs.sort()
+	print(String(format: "%@ background motion error (px): median %.3f, 90%% %.3f, within 0.25: %.1f%%", name,
+		errs[errs.count / 2], errs[errs.count * 9 / 10], Double(errs.filter { $0 <= 0.25 }.count) * 100 / Double(errs.count)))
+}
+if let fg = generator as? FrameGenerator {
+	motionReport(fg.patchMotion!, 16, "patch")
+	motionReport(fg.motion!, 4, "map")
+}
 savePGM(outY, width, height, "\(which)-luma.pgm")
 // Error against the true frame, x4, as an image (grey = 0)
 savePGM(zip(outY, truth.luma).map { UInt8(max(0, min(255, 128 + (Int($0) - Int($1)) * 4))) }, width, height,
 	"\(which)-error.pgm")
+
+// `--seq N`: N pairs of continuous motion (with --noise, fresh noise each
+// frame), as a stream would give. Shimmer is the generated frame's error
+// changing from one generated frame to the next, so besides the PSNR this
+// reports the mean change in error between consecutive generated frames.
+if let count = Int(arg("--seq") ?? "") {
+	generator.reset()
+	var prevFrame: (luma: MTLTexture, chroma: MTLTexture)?
+	var lastErr: [Int]?
+	var psnrs: [Double] = [], flicker: [Double] = []
+	for k in 0...count {
+		let f = upload(frame(Float(k), noise: noiseLevel, seed: 300 + k * 7))
+		let cb = queue.makeCommandBuffer()!
+		let paired = generator.push(luma: f.luma, chroma: f.chroma, bt2020: false, fullRange: false, into: cb)
+		if paired, let prevFrame { generator.interpolate(previous: prevFrame, current: f, into: cb) }
+		cb.commit()
+		cb.waitUntilCompleted()
+		if paired, prevFrame != nil {
+			let out = readback(generator.outLuma!)
+			let truth = frame(Float(k) - 0.5).luma
+			psnrs.append(psnr(out, truth))
+			let err = zip(out, truth).map { Int($0) - Int($1) }
+			if let lastErr {
+				flicker.append(Double(zip(err, lastErr).reduce(0) { $0 + abs($1.0 - $1.1) }) / Double(err.count))
+			}
+			lastErr = err
+		}
+		prevFrame = f
+	}
+	print(String(format: "sequence of %d: mean PSNR %.2f dB, shimmer (mean error change between frames) %.3f",
+		psnrs.count, psnrs.reduce(0, +) / Double(psnrs.count), flicker.reduce(0, +) / Double(max(flicker.count, 1))))
+}
 
 if let name = arg("--save") {
 	try! Data(outY + outC).write(to: outDir.appendingPathComponent("\(name).raw"))

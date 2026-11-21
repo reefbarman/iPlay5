@@ -26,18 +26,21 @@ protocol FrameInterpolator: AnyObject {
 extension FlyHighGenerator: FrameInterpolator {}
 
 /// Custom frame generation: makes the picture halfway between two decoded
-/// frames with a block motion search and a motion-compensated blend, all on
-/// the GPU (see FrameGen.metal). Output is YCbCr in the same formats as the
+/// frames with a motion search (blocks, then Lucas-Kanade patches merged into
+/// a per-pixel motion map) and a motion-compensated blend, all on the GPU
+/// (see FrameGen.metal). Output is YCbCr in the same formats as the
 /// decoder's, so the normal render pass draws it.
 ///
 /// Used from the video thread only.
 final class FrameGenerator: FrameInterpolator {
 	private let device: MTLDevice
 	private let reduce4: MTLComputePipelineState
+	private let gradient: MTLComputePipelineState
 	private let reduce2: MTLComputePipelineState
 	private let coarse: MTLComputePipelineState
 	private let fine: MTLComputePipelineState
 	private let smooth: MTLComputePipelineState
+	private let densify: MTLComputePipelineState
 	private let synthLuma: MTLComputePipelineState
 	private let synthChroma: MTLComputePipelineState
 
@@ -48,11 +51,15 @@ final class FrameGenerator: FrameInterpolator {
 		var chromaFormat: MTLPixelFormat
 		/// Shrunk copies of the previous and current frame, swapped each frame
 		var quarter: [MTLTexture]
+		/// The 1/4 copies with their gradients (luma, d/dx, d/dy)
+		var gradients: [MTLTexture]
 		var eighth: [MTLTexture]
 		var coarseField: MTLTexture
 		var fineField: MTLTexture
-		/// This pair's final motion and the last pair's, swapped each time
+		/// This pair's patch motion and the last pair's, swapped each time
 		var smoothFields: [MTLTexture]
+		/// Per 1/4 pixel motion
+		var flow: MTLTexture
 		var outLuma: MTLTexture
 		var outChroma: MTLTexture
 		var params: FGParams
@@ -67,22 +74,29 @@ final class FrameGenerator: FrameInterpolator {
 	/// The last generated frame
 	var outLuma: MTLTexture? { textures?.outLuma }
 	var outChroma: MTLTexture? { textures?.outChroma }
+	/// The last motion map (half motion per 1/4 pixel), for scripts/fgbench
+	var motion: MTLTexture? { textures?.flow }
+	/// The last patch motion, before merging
+	var patchMotion: MTLTexture? { textures.map { $0.smoothFields[fieldIndex ^ 1] } }
 
 	init?(device: MTLDevice, library: MTLLibrary) {
 		func make(_ name: String) -> MTLComputePipelineState? {
 			guard let function = library.makeFunction(name: name) else { return nil }
 			return try? device.makeComputePipelineState(function: function)
 		}
-		guard let reduce4 = make("fg_reduce4"), let reduce2 = make("fg_reduce2"),
+		guard let reduce4 = make("fg_reduce4"), let gradient = make("fg_gradient"), let reduce2 = make("fg_reduce2"),
 			let coarse = make("fg_coarse"), let fine = make("fg_fine"), let smooth = make("fg_smooth"),
-			let synthLuma = make("fg_synth_luma"), let synthChroma = make("fg_synth_chroma")
+			let densify = make("fg_densify"), let synthLuma = make("fg_synth_luma"),
+			let synthChroma = make("fg_synth_chroma")
 		else { return nil }
 		self.device = device
 		self.reduce4 = reduce4
+		self.gradient = gradient
 		self.reduce2 = reduce2
 		self.coarse = coarse
 		self.fine = fine
 		self.smooth = smooth
+		self.densify = densify
 		self.synthLuma = synthLuma
 		self.synthChroma = synthChroma
 	}
@@ -111,6 +125,7 @@ final class FrameGenerator: FrameInterpolator {
 		encoder.label = "Frame gen: shrink"
 		encoder.setBytes(&params, length: MemoryLayout<FGParams>.stride, index: 0)
 		dispatch(encoder, reduce4, [luma, t.quarter[current]], t.quarter[current])
+		dispatch(encoder, gradient, [t.quarter[current], t.gradients[current]], t.gradients[current])
 		dispatch(encoder, reduce2, [t.quarter[current], t.eighth[current]], t.eighth[current])
 		encoder.endEncoding()
 
@@ -140,13 +155,16 @@ final class FrameGenerator: FrameInterpolator {
 			MTLSize(width: Int(params.coarseCount.x), height: Int(params.coarseCount.y), depth: 1),
 			threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
 		dispatch(
-			encoder, fine, [t.quarter[prev], t.quarter[current], t.coarseField, t.fineField, priorField], t.fineField,
-			count: params.fineCount)
+			encoder, fine,
+			[t.quarter[prev], t.quarter[current], t.coarseField, t.fineField, priorField, t.gradients[prev],
+			 t.gradients[current]],
+			t.fineField, count: params.fineCount)
 		dispatch(encoder, smooth, [t.fineField, field], field, count: params.fineCount)
-		dispatch(encoder, synthLuma, [previous.luma, frame.luma, field, t.outLuma], t.outLuma)
+		dispatch(encoder, densify, [t.quarter[prev], t.quarter[current], field, t.flow], t.flow)
+		dispatch(encoder, synthLuma, [previous.luma, frame.luma, t.flow, t.outLuma], t.outLuma)
 		dispatch(
 			encoder, synthChroma,
-			[previous.luma, frame.luma, previous.chroma, frame.chroma, field, t.outChroma], t.outChroma)
+			[previous.luma, frame.luma, previous.chroma, frame.chroma, t.flow, t.outChroma], t.outChroma)
 		encoder.endEncoding()
 		fieldIndex ^= 1
 		hasPriorField = true
@@ -191,6 +209,8 @@ final class FrameGenerator: FrameInterpolator {
 			return device.makeTexture(descriptor: desc)
 		}
 		guard let q0 = texture(.r16Float, qw, qh), let q1 = texture(.r16Float, qw, qh),
+			let g0 = texture(.rgba16Float, qw, qh), let g1 = texture(.rgba16Float, qw, qh),
+			let flow = texture(.rg32Float, qw, qh),
 			let e0 = texture(.r16Float, ew, eh), let e1 = texture(.r16Float, ew, eh),
 			let coarseField = texture(.rg32Float, Int(coarseCount.x), Int(coarseCount.y)),
 			let fineField = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),
@@ -210,8 +230,8 @@ final class FrameGenerator: FrameInterpolator {
 			coarseCount: coarseCount, fineCount: fineCount)
 		textures = Textures(
 			width: width, height: height, lumaFormat: luma.pixelFormat, chromaFormat: chroma.pixelFormat,
-			quarter: [q0, q1], eighth: [e0, e1], coarseField: coarseField, fineField: fineField,
-			smoothFields: [smooth0, smooth1], outLuma: outLuma, outChroma: outChroma, params: params)
+			quarter: [q0, q1], gradients: [g0, g1], eighth: [e0, e1], coarseField: coarseField, fineField: fineField,
+			smoothFields: [smooth0, smooth1], flow: flow, outLuma: outLuma, outChroma: outChroma, params: params)
 		log.notice("Frame generation ready for \(width)x\(height)")
 		return true
 	}
