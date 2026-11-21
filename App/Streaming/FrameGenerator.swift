@@ -133,7 +133,12 @@ final class FrameGenerator: FrameInterpolator {
 		let priorField = t.smoothFields[fieldIndex ^ 1]
 		var hasPrior: Int32 = hasPriorField ? 1 : 0
 		encoder.setBytes(&hasPrior, length: MemoryLayout<Int32>.size, index: 1)
-		dispatch(encoder, coarse, [t.eighth[prev], t.eighth[current], t.coarseField], t.coarseField, count: params.coarseCount)
+		// One threadgroup per block (FG_COARSE_THREADS in FrameGen.metal)
+		encoder.setComputePipelineState(coarse)
+		encoder.setTextures([t.eighth[prev], t.eighth[current], t.coarseField], range: 0..<3)
+		encoder.dispatchThreadgroups(
+			MTLSize(width: Int(params.coarseCount.x), height: Int(params.coarseCount.y), depth: 1),
+			threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
 		dispatch(
 			encoder, fine, [t.quarter[prev], t.quarter[current], t.coarseField, t.fineField, priorField], t.fineField,
 			count: params.fineCount)
@@ -153,6 +158,7 @@ final class FrameGenerator: FrameInterpolator {
 		_ encoder: MTLComputeCommandEncoder, _ pipeline: MTLComputePipelineState, _ inputs: [MTLTexture],
 		_ grid: MTLTexture, count: SIMD2<Int32>? = nil
 	) {
+
 		encoder.setComputePipelineState(pipeline)
 		encoder.setTextures(inputs, range: 0..<inputs.count)
 		let size = count.map { MTLSize(width: Int($0.x), height: Int($0.y), depth: 1) }

@@ -27,6 +27,7 @@ struct FGParams {
 
 constexpr sampler fgLinear(filter::linear, address::clamp_to_edge, coord::normalized);
 
+
 constant int FG_BLOCK = 4;          // block size in the shrunk images
 constant int FG_COARSE_RANGE = 8;   // 1/8 px each way: up to 128 full px of motion per frame
 constant float FG_FINE_BLOCK = 16.0;
@@ -66,35 +67,62 @@ static float fg_read(texture2d<float, access::read> t, int2 c) {
 	return t.read(uint2(c)).r;
 }
 
-// Exhaustive symmetric search on the 1/8 images, one 4x4 block (+1 px border) per thread
+// Exhaustive symmetric search on the 1/8 images, one 4x4 block (+1 px border)
+// per threadgroup: the block's neighbourhood in both images is copied to
+// threadgroup memory, each thread tries some of the 17 x 17 candidates, and
+// the best (first in row order on a tie) wins.
+constant int FG_COARSE_SPAN = 2 * FG_COARSE_RANGE + 1;
+constant int FG_COARSE_TILE = FG_BLOCK + 2 + 2 * FG_COARSE_RANGE;  // -1 - range ... BLOCK + range
+constant uint FG_COARSE_THREADS = 128;
+
 kernel void fg_coarse(texture2d<float, access::read> prev [[texture(0)]],
                       texture2d<float, access::read> curr [[texture(1)]],
                       texture2d<float, access::write> field [[texture(2)]],
                       constant FGParams &p [[buffer(0)]],
-                      uint2 gid [[thread_position_in_grid]]) {
-	if (int(gid.x) >= p.coarseCount.x || int(gid.y) >= p.coarseCount.y) return;
-	int2 base = int2(gid) * FG_BLOCK;
+                      uint2 block [[threadgroup_position_in_grid]],
+                      uint tid [[thread_index_in_threadgroup]]) {
+	threadgroup float tp[FG_COARSE_TILE * FG_COARSE_TILE];
+	threadgroup float tc[FG_COARSE_TILE * FG_COARSE_TILE];
+	threadgroup float bestCost[FG_COARSE_THREADS];
+	threadgroup int bestIndex[FG_COARSE_THREADS];
+	if (int(block.x) >= p.coarseCount.x || int(block.y) >= p.coarseCount.y) return;
+	int2 base = int2(block) * FG_BLOCK;
+	int2 origin = base - (1 + FG_COARSE_RANGE);
+	for (uint i = tid; i < uint(FG_COARSE_TILE * FG_COARSE_TILE); i += FG_COARSE_THREADS) {
+		int2 q = origin + int2(i % FG_COARSE_TILE, i / FG_COARSE_TILE);
+		tp[i] = fg_read(prev, q);
+		tc[i] = fg_read(curr, q);
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
 
 	float best = INFINITY;
-	int2 bestD = int2(0);
-	for (int dy = -FG_COARSE_RANGE; dy <= FG_COARSE_RANGE; dy++) {
-		for (int dx = -FG_COARSE_RANGE; dx <= FG_COARSE_RANGE; dx++) {
-			int2 d = int2(dx, dy);
-			// Prefer small motion when the match is about as good
-			float sad = 0.02 * float(abs(dx) + abs(dy));
-			for (int y = -1; y <= FG_BLOCK; y++) {
-				for (int x = -1; x <= FG_BLOCK; x++) {
-					int2 q = base + int2(x, y);
-					sad += abs(fg_read(prev, q - d) - fg_read(curr, q + d));
-				}
-			}
-			if (sad < best) {
-				best = sad;
-				bestD = d;
-			}
+	int bestI = 0;
+	for (int c = int(tid); c < FG_COARSE_SPAN * FG_COARSE_SPAN; c += int(FG_COARSE_THREADS)) {
+		int dy = c / FG_COARSE_SPAN - FG_COARSE_RANGE, dx = c % FG_COARSE_SPAN - FG_COARSE_RANGE;
+		// Prefer small motion when the match is about as good
+		float sad = 0.02 * float(abs(dx) + abs(dy));
+		for (int y = -1; y <= FG_BLOCK; y++) {
+			int rp = (y - dy + 1 + FG_COARSE_RANGE) * FG_COARSE_TILE + 1 + FG_COARSE_RANGE - dx;
+			int rc = (y + dy + 1 + FG_COARSE_RANGE) * FG_COARSE_TILE + 1 + FG_COARSE_RANGE + dx;
+			for (int x = -1; x <= FG_BLOCK; x++) sad += abs(tp[rp + x] - tc[rc + x]);
+		}
+		if (sad < best) {
+			best = sad;
+			bestI = c;
 		}
 	}
-	field.write(float4(float2(bestD) * 8.0, 0, 0), gid);
+	bestCost[tid] = best;
+	bestIndex[tid] = bestI;
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if (tid != 0) return;
+	for (uint i = 1; i < FG_COARSE_THREADS; i++) {
+		if (bestCost[i] < best || (bestCost[i] == best && bestIndex[i] < bestI)) {
+			best = bestCost[i];
+			bestI = bestIndex[i];
+		}
+	}
+	int2 d = int2(bestI % FG_COARSE_SPAN, bestI / FG_COARSE_SPAN) - FG_COARSE_RANGE;
+	field.write(float4(float2(d) * 8.0, 0, 0), block);
 }
 
 // `prior` is last pair's motion for this block. Flat areas (pole and trunk
@@ -152,8 +180,11 @@ kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
 		}
 	}
 
-	// Step search: 4, 2, 1 full px (1, 1/2, 1/4 of a 1/4-size pixel)
-	for (float step = 4.0; step >= 1.0; step *= 0.5) {
+	// Step search: 4, 2, 1, 1/2, 1/4 full px. Stopping at whole pixels left
+	// motion up to half a pixel off, so each frame lands up to a pixel apart
+	// from the other in the blend: textures (terrain, signs) came out soft or
+	// doubled in different places every frame, which shows as shimmer.
+	for (float step = 4.0; step >= 0.25; step *= 0.5) {
 		float2 centre = bestD;
 		const float2 dirs[4] = { float2(step, 0), float2(-step, 0), float2(0, step), float2(0, -step) };
 		for (int i = 0; i < 4; i++) {
@@ -273,6 +304,7 @@ static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, textur
 	c.confidence = 1.0 - smoothstep(0.03, 0.09, minCost);
 	return c;
 }
+
 
 kernel void fg_synth_luma(texture2d<float, access::sample> prevY [[texture(0)]],
                           texture2d<float, access::sample> currY [[texture(1)]],

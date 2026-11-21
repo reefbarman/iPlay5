@@ -160,6 +160,7 @@ final class MetalRenderer {
 		let frameGenMode = self.frameGenMode
 		let interval = frameInterval
 		let inFlight = self.inFlight
+		let generateMs = self.generateMs
 		lock.unlock()
 
 		let generator = paused ? nil : pickGenerator(frameGenMode)
@@ -167,6 +168,7 @@ final class MetalRenderer {
 			previous = nil
 			activeGenerator?.reset()
 			activeGenerator = generator
+			lock.withLock { self.generateMs = 0 }
 		}
 		guard !paused, let layer, target.width > 0, target.height > 0, let cache = textureCache else { return }
 
@@ -228,6 +230,13 @@ final class MetalRenderer {
 			if paired, let previous, let prevLuma = CVMetalTextureGetTexture(previous.luma),
 				let prevChroma = CVMetalTextureGetTexture(previous.chroma)
 			{
+				// FlyHigh steps its quality down when it can't keep up (e.g. the
+				// phone throttling) and back up when there's room
+				if let flyHigh = generator as? FlyHighGenerator,
+					flyHigh.adapt(generateMs: generateMs, interval: interval)
+				{
+					lock.withLock { self.generateMs = 0 }
+				}
 				// Two or more still waiting for the screen: we're behind, so show
 				// only the real frame rather than queue up more delay
 				if inFlight >= 2 {

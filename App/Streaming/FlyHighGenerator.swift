@@ -2,7 +2,7 @@ import Foundation
 import Metal
 
 // Must match the param structs in FlyHigh.metal
-private struct FHInputParams { var oh, ow: UInt32; var matrix, fullRange: Int32 }
+private struct FHInputParams { var oh, ow, lh, ch: UInt32; var matrix, fullRange: Int32 }
 private struct FHInterpParams { var c, ih, iw, oh, ow, aa, c0: UInt32; var scale: Float }
 private struct FHPoolParams { var c, h, w, oh, ow, k: UInt32 }
 private struct FHLumaParams { var h, w, c0: UInt32; var scale: Float }
@@ -30,10 +30,29 @@ private struct FHRenderParams {
 ///
 /// Used from the video thread only.
 final class FlyHighGenerator {
-	/// Refinement passes; the engine's default
-	private static let iterations = 2
-	/// Network height: the engine's 480-line rung for anything bigger
-	private static let networkLines = 480
+	/// Quality levels, best first: network height (the engine's 480-line
+	/// rung for anything bigger) and refinement passes (the engine's default
+	/// is 2). `cost` is the rough GPU time relative to the first. When the GPU
+	/// can't keep up (e.g. the phone throttles as it warms up), `adapt` steps
+	/// down, and back up once there's room.
+	/// Costs measured with scripts/fgbench on an M5 Pro.
+	private static let levels: [(lines: Int, iterations: Int, cost: Double)] = [
+		(480, 2, 1.0), (480, 1, 0.81), (384, 1, 0.66), (288, 1, 0.54),
+	]
+	/// Settable for testing; `adapt` normally drives it
+	var level = 0 {
+		didSet {
+			level = min(max(level, 0), Self.levels.count - 1)
+			if Self.levels[level].lines != Self.levels[oldValue].lines { reset() }
+		}
+	}
+	private var iterations: Int { Self.levels[level].iterations }
+	private var networkLines: Int { Self.levels[level].lines }
+	/// For `adapt`: pairs since the last level change, and how long the
+	/// GPU time has been over / under budget
+	private var pairsSinceChange = 0
+	private var overBudget = 0
+	private var underBudget = 0
 
 	private let device: MTLDevice
 	private let pipelines: [String: MTLComputePipelineState]
@@ -48,6 +67,9 @@ final class FlyHighGenerator {
 		let cin: Int
 		let cout: Int
 		let act: UInt32
+		/// Groups of 8 output channels per threadgroup (fh_mconv's NC)
+		let groupsPerThreadgroup: Int
+		let groups: Int
 	}
 
 	/// A tensor (or channel slice of one) in a [C][H][W] half buffer
@@ -76,6 +98,8 @@ final class FlyHighGenerator {
 		var flowvis, fx, fr1, fr2, d, lumA, lumB: View
 		var hm, dfilm, ftvt, wt36: View
 		var up7, rx, blend, rq1, rq2, rt: View
+		/// The input downscale's horizontal pass: luma rows, chroma rows (float)
+		var rowsY, rowsC: View
 		var outLuma: MTLTexture
 		var outChroma: MTLTexture
 	}
@@ -88,17 +112,22 @@ final class FlyHighGenerator {
 	/// The last generated frame
 	var outLuma: MTLTexture? { state?.outLuma }
 	var outChroma: MTLTexture? { state?.outChroma }
-	/// Network size, for the stats overlay
-	var status: String { state.map { "\($0.wq * 4)x\($0.hq * 4)" } ?? "" }
+	/// Network size and passes, for the stats overlay
+	var status: String { state.map { "\($0.wq * 4)x\($0.hq * 4) x\(iterations)" } ?? "" }
 
 	init?(device: MTLDevice, library: MTLLibrary) {
+		// The convolutions use simdgroup matrices (A14 and later)
+		guard device.supportsFamily(.apple7) else {
+			log.error("FlyHigh: needs an A14 GPU or newer")
+			return nil
+		}
 		self.device = device
 		var pipelines: [String: MTLComputePipelineState] = [:]
+		let convKernels = [1, 2].flatMap { s in (1...4).map { "fh_mconv_\(s)_\($0)" } }
 		for name in [
-			"fh_input", "fh_interp", "fh_avgpool", "fh_luma", "fh_luma_grad", "fh_sad", "fh_warp", "fh_convex",
-			"fh_blendmix", "fh_conv1", "fh_conv2", "fh_chcopy", "fh_fill", "fh_addto", "fh_film", "fh_filmout",
-			"fh_render_luma", "fh_render_chroma",
-		] {
+			"fh_input_h", "fh_input_v", "fh_interp", "fh_avgpool", "fh_luma", "fh_luma_grad", "fh_sad", "fh_warp", "fh_convex",
+			"fh_blendmix", "fh_chcopy", "fh_addto", "fh_film", "fh_filmout", "fh_render_luma", "fh_render_chroma",
+		] + convKernels {
 			guard let function = library.makeFunction(name: name),
 				let pipeline = try? device.makeComputePipelineState(function: function)
 			else {
@@ -112,13 +141,31 @@ final class FlyHighGenerator {
 		guard let weights = Self.loadWeights() else { return nil }
 		var convs: [String: Conv] = [:]
 		let prelu = [
-			"enc.e1", "enc.e2", "enc.e3", "enc.e4", "coarse.c1", "coarse.c2", "coarse.c3", "coarse.c4", "fine.r1",
-			"fine.r2", "fine.r3", "film.h1", "film.h2", "refine.q1", "refine.q2", "refine.q3",
+			"enc.e1", "enc.e2", "enc.e3", "enc.e4", "coarse.c2", "coarse.c3", "coarse.c4", "fine.r2", "fine.r3",
+			"film.h1", "film.h2", "refine.q1", "refine.q2", "refine.q3",
 		]
 		let plain = ["coarse.head", "fine.out", "up.w", "film.out"]
 		for name in prelu {
 			guard let conv = Self.makeConv(device, weights, weight: "\(name).0.weight", bias: "\(name).0.bias",
 				slope: "\(name).1.weight", act: 1)
+			else { return nil }
+			convs[name] = conv
+		}
+		// Convs whose inputs are laid out differently from the graph, to skip
+		// work on channels that are always zero. `inputs` lists, for each of
+		// our input channels, the graph's channel.
+		// coarse.c1: the graph's 4 side + 76 state channels (150..<230) are
+		// zero without the engine's state carry, so they're left out.
+		// fine.r1: our fx puts the cost volume before h (graph: h 82..<130,
+		// cost 130..<155), so the first pass, where h is still zero, can stop
+		// before h.
+		let fineOrder = Array(0..<82) + Array(130..<155) + Array(82..<130)
+		for (name, source, inputs) in [
+			("coarse.c1", "coarse.c1", Array(0..<150) + Array(230..<279)),
+			("fine.r1", "fine.r1", fineOrder), ("fine.r1.first", "fine.r1", Array(fineOrder.prefix(107))),
+		] {
+			guard let conv = Self.makeConv(device, weights, weight: "\(source).0.weight", bias: "\(source).0.bias",
+				slope: "\(source).1.weight", act: 1, inputs: inputs)
 			else { return nil }
 			convs[name] = conv
 		}
@@ -149,6 +196,39 @@ final class FlyHighGenerator {
 	func reset() {
 		state = nil
 		hasPrevious = false
+		pairsSinceChange = 0
+		overBudget = 0
+		underBudget = 0
+	}
+
+	/// Steps the quality level down when `generateMs` (smoothed GPU time per
+	/// generated frame) is over budget for a while, and back up when the next
+	/// level up should fit with room to spare. `interval` is the time between
+	/// real frames; the budget is half of it, since the generated frame is
+	/// shown half a frame before the real one and its GPU time adds to the
+	/// delay. Call once per pair. Returns true if the level changed (the
+	/// caller should restart its smoothing).
+	func adapt(generateMs: Double, interval: Double) -> Bool {
+		pairsSinceChange += 1
+		// Let the smoothed time catch up with the last change first
+		guard generateMs > 0, pairsSinceChange > 45 else { return false }
+		let budget = interval * 1000 * 0.5
+		overBudget = generateMs > budget ? overBudget + 1 : 0
+		let upCost = level > 0 ? generateMs / Self.levels[level].cost * Self.levels[level - 1].cost : .infinity
+		underBudget = upCost < budget * 0.75 ? underBudget + 1 : 0
+		var next = level
+		if overBudget > 20, level + 1 < Self.levels.count {
+			next = level + 1
+		} else if underBudget > 240, level > 0 {
+			next = level - 1
+		}
+		guard next != level else { return false }
+		log.notice("FlyHigh: \(String(format: "%.1f", generateMs)) ms per frame, quality level \(self.level) -> \(next)")
+		level = next
+		pairsSinceChange = 0
+		overBudget = 0
+		underBudget = 0
+		return true
 	}
 
 	/// Adds the newest frame and encodes its features. Returns true when
@@ -171,11 +251,13 @@ final class FlyHighGenerator {
 		e.label = "FlyHigh: encode"
 
 		// The network input straight at 1/4 size: the graph's interpolate(0.25, antialias)
+		let input = FHInputParams(
+			oh: u(hq), ow: u(wq), lh: u(luma.height), ch: u(chroma.height), matrix: bt2020 ? 1 : 0,
+			fullRange: fullRange ? 1 : 0)
 		e.setTexture(luma, index: 0)
 		e.setTexture(chroma, index: 1)
-		run(e, "fh_input", [f.aq],
-			FHInputParams(oh: u(hq), ow: u(wq), matrix: bt2020 ? 1 : 0, fullRange: fullRange ? 1 : 0),
-			grid: (wq, hq, 1))
+		run(e, "fh_input_h", [s.rowsY, s.rowsC], input, grid: (wq, luma.height, 1))
+		run(e, "fh_input_v", [s.rowsY, s.rowsC, f.aq], input, grid: (wq, hq, 1))
 		run(e, "fh_avgpool", [f.aq, f.i8], FHPoolParams(c: 3, h: u(hq), w: u(wq), oh: u(hq / 2), ow: u(wq / 2), k: 2),
 			grid: (wq / 2, hq / 2, 3))
 		run(e, "fh_avgpool", [f.i8, f.i16],
@@ -205,13 +287,13 @@ final class FlyHighGenerator {
 		let (h8, w8, h16, w16) = (hq / 2, wq / 2, hq / 4, wq / 4)
 		e.label = "FlyHigh: interpolate"
 
-		// Coarse flow at 1/16: features, images, zero side/state channels, cost volume
+		// Coarse flow at 1/16: features, images, cost volume (the graph's zero
+		// side/state channels are left out of coarse.c1)
 		copy(e, a.f16, s.cin, c: 72)
 		copy(e, b.f16, s.cin.at(72), c: 72)
 		copy(e, a.i16, s.cin.at(144), c: 3)
 		copy(e, b.i16, s.cin.at(147), c: 3)
-		fill(e, s.cin.at(150), count: 80 * h16 * w16)
-		run(e, "fh_sad", [a.l16, b.l16, s.cin.at(230)], FHSadParams(h: u(h16), w: u(w16), radius: 3, span: 7),
+		run(e, "fh_sad", [a.l16, b.l16, s.cin.at(150)], FHSadParams(h: u(h16), w: u(w16), radius: 3, span: 7),
 			grid: (w16, h16, 49))
 		conv(e, "coarse.c1", s.cin, s.ch1)
 		conv(e, "coarse.c2", s.ch1, s.ch2)
@@ -225,11 +307,11 @@ final class FlyHighGenerator {
 			FHInterpParams(c: 3, ih: u(h16), iw: u(w16), oh: u(h8), ow: u(w8), aa: 0, c0: 4, scale: 1),
 			grid: (w8, h8, 3))
 
-		// Refinement at 1/8. fx = wa | wb | ia | ib | flow8 | h | fcv; the last
-		// refine conv writes the new h straight into its slot.
-		let h = s.fx.at(82)
-		fill(e, h, count: 48 * h8 * w8)
-		for _ in 0..<Self.iterations {
+		// Refinement at 1/8. fx = wa | wb | ia | ib | flow8 | fcv | h; the last
+		// refine conv writes the new h straight into its slot. h starts at
+		// zero, so the first pass leaves it out.
+		let h = s.fx.at(107)
+		for pass in 0..<iterations {
 			warp(e, a.f8, s.flowvis, flow: 0, s.fx, c: 36, scale: 0.125)
 			warp(e, b.f8, s.flowvis, flow: 2, s.fx.at(36), c: 36, scale: 0.125)
 			warp(e, a.i8, s.flowvis, flow: 0, s.fx.at(72), c: 3, scale: 0.125)
@@ -237,9 +319,9 @@ final class FlyHighGenerator {
 			copy(e, s.flowvis, s.fx.at(78), c: 4, scale: 0.125)
 			run(e, "fh_luma", [s.fx, s.lumA], FHLumaParams(h: u(h8), w: u(w8), c0: 72, scale: 1), grid: (w8, h8, 1))
 			run(e, "fh_luma", [s.fx, s.lumB], FHLumaParams(h: u(h8), w: u(w8), c0: 75, scale: 1), grid: (w8, h8, 1))
-			run(e, "fh_sad", [s.lumA, s.lumB, s.fx.at(130)], FHSadParams(h: u(h8), w: u(w8), radius: 2, span: 5),
+			run(e, "fh_sad", [s.lumA, s.lumB, s.fx.at(82)], FHSadParams(h: u(h8), w: u(w8), radius: 2, span: 5),
 				grid: (w8, h8, 25))
-			conv(e, "fine.r1", s.fx, s.fr1)
+			conv(e, pass == 0 ? "fine.r1.first" : "fine.r1", s.fx, s.fr1)
 			conv(e, "fine.r2", s.fr1, s.fr2)
 			conv(e, "fine.r3", s.fr2, h)
 			conv(e, "fine.out", h, s.d)
@@ -292,6 +374,7 @@ final class FlyHighGenerator {
 		_ e: MTLComputeCommandEncoder, _ name: String, _ views: [View], _ params: P, grid: (Int, Int, Int)
 	) {
 		guard let pipeline = pipelines[name] else { return }
+
 		e.setComputePipelineState(pipeline)
 		for (i, v) in views.enumerated() { e.setBuffer(v.buffer, offset: v.offset, index: i) }
 		var p = params
@@ -309,7 +392,10 @@ final class FlyHighGenerator {
 		_ e: MTLComputeCommandEncoder, _ name: String, _ input: View, stride: Int = 1, _ output: View,
 		residual: View? = nil
 	) {
-		guard let c = convs[name], let pipeline = pipelines[stride == 1 ? "fh_conv1" : "fh_conv2"] else { return }
+		guard let c = convs[name], let pipeline = pipelines["fh_mconv_\(stride)_\(c.groupsPerThreadgroup)"] else {
+			return
+		}
+
 		let (hout, wout) = (input.h / stride, input.w / stride)
 		e.setComputePipelineState(pipeline)
 		e.setBuffer(input.buffer, offset: input.offset, index: 0)
@@ -323,9 +409,10 @@ final class FlyHighGenerator {
 			cin: u(c.cin), cout: u(c.cout), h: u(input.h), w: u(input.w), hout: u(hout), wout: u(wout), act: c.act,
 			res: residual == nil ? 0 : 1)
 		e.setBytes(&p, length: MemoryLayout<FHConvParams>.stride, index: 6)
-		e.dispatchThreads(
-			MTLSize(width: (wout + 3) / 4, height: hout, depth: (c.cout + 7) / 8),
-			threadsPerThreadgroup: MTLSize(width: 8, height: 8, depth: 1))
+		e.dispatchThreadgroups(
+			// 32 px x 2 rows per threadgroup (FH_ROWS in FlyHigh.metal)
+			MTLSize(width: (wout + 31) / 32, height: (hout + 1) / 2, depth: c.groups / c.groupsPerThreadgroup),
+			threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
 	}
 
 	private func copy(_ e: MTLComputeCommandEncoder, _ src: View, _ dst: View, c: Int, scale: Float = 1) {
@@ -333,9 +420,6 @@ final class FlyHighGenerator {
 			grid: (src.w, src.h, c))
 	}
 
-	private func fill(_ e: MTLComputeCommandEncoder, _ dst: View, count: Int) {
-		run(e, "fh_fill", [dst], UInt32(count), grid: (count, 1, 1))
-	}
 
 	/// Backward warp of `c` channels of `image` by the flow in channels `flow`, `flow + 1`
 	private func warp(
@@ -357,7 +441,7 @@ final class FlyHighGenerator {
 		reset()
 		let width = luma.width, height = luma.height
 		// Network size: multiples of 32, so the 1/16 maps are whole
-		let lines = max(128, min(Self.networkLines, height) / 32 * 32)
+		let lines = max(128, min(networkLines, height) / 32 * 32)
 		let columns = max(128, Int((Double(lines) * Double(width) / Double(height) / 32).rounded()) * 32)
 		let hq = lines / 4, wq = columns / 4
 		let (h8, w8, h16, w16) = (hq / 2, wq / 2, hq / 4, wq / 4)
@@ -369,6 +453,13 @@ final class FlyHighGenerator {
 				return View(buffer: film, offset: 0, h: h, w: w)
 			}
 			return View(buffer: b, offset: 0, h: h, w: w)
+		}
+		func floats(_ count: Int) -> View {
+			guard let b = device.makeBuffer(length: count * 4, options: .storageModePrivate) else {
+				failed = true
+				return View(buffer: film, offset: 0, h: 1, w: 1)
+			}
+			return View(buffer: b, offset: 0, h: 1, w: 1)
 		}
 		func features() -> Features {
 			Features(
@@ -385,13 +476,14 @@ final class FlyHighGenerator {
 		let s = State(
 			width: width, height: height, lumaFormat: luma.pixelFormat, chromaFormat: chroma.pixelFormat, hq: hq, wq: wq,
 			frames: frames,
-			cin: tensor(279, h16, w16), ch1: tensor(96, h16, w16), ch2: tensor(96, h16, w16), ch3: tensor(96, h16, w16),
+			cin: tensor(199, h16, w16), ch1: tensor(96, h16, w16), ch2: tensor(96, h16, w16), ch3: tensor(96, h16, w16),
 			o: tensor(12, h16, w16),
 			flowvis: tensor(7, h8, w8), fx: tensor(155, h8, w8), fr1: tensor(48, h8, w8), fr2: tensor(48, h8, w8),
 			d: tensor(7, h8, w8), lumA: tensor(1, h8, w8), lumB: tensor(1, h8, w8),
 			hm: tensor(48, h8, w8), dfilm: tensor(5, h8, w8), ftvt: tensor(7, h8, w8), wt36: tensor(36, h8, w8),
 			up7: tensor(7, hq, wq), rx: tensor(14, hq, wq), blend: tensor(3, hq, wq), rq1: tensor(24, hq, wq),
 			rq2: tensor(24, hq, wq), rt: tensor(3, hq, wq),
+			rowsY: floats(height * wq), rowsC: floats(chroma.height * wq * 2),
 			outLuma: texture(luma.pixelFormat, width, height) ?? luma,
 			outChroma: texture(chroma.pixelFormat, chroma.width, chroma.height) ?? chroma)
 		guard !failed, s.outLuma !== luma, s.outChroma !== chroma else {
@@ -446,22 +538,36 @@ final class FlyHighGenerator {
 		return Weights(blob: blob, tensors: tensors)
 	}
 
-	/// Packs a [cout][cin][3][3] conv as [cout / 8][cin][9][8] for fh_conv
+	/// Packs a [cout][cin][3][3] conv as [cout / 8][cin / 8][9][8 cin][8 cout]
+	/// for fh_mconv. `inputs` maps our input channels to the weights' (all of
+	/// them, in order, by default).
 	private static func makeConv(
-		_ device: MTLDevice, _ weights: Weights, weight: String, bias: String, slope: String?, act: UInt32
+		_ device: MTLDevice, _ weights: Weights, weight: String, bias: String, slope: String?, act: UInt32,
+		inputs: [Int]? = nil
 	) -> Conv? {
 		guard let tensor = weights.halves(weight), tensor.shape.count == 4, let b = weights.floats(bias) else {
 			return nil
 		}
 		let (shape, w) = (tensor.shape, tensor.values)
-		let (cout, cin) = (shape[0], shape[1])
-		let groups = (cout + 7) / 8
-		var packed = [UInt16](repeating: 0, count: groups * cin * 72)
+		let (cout, wcin) = (shape[0], shape[1])
+		let inputs = inputs ?? Array(0..<wcin)
+		let cin = inputs.count
+		// Output channel groups per threadgroup: as many as fit up to 4,
+		// without padding more than a fifth of the work
+		let needed = (cout + 7) / 8
+		func padded(_ n: Int) -> Int { (needed + n - 1) / n * n }
+		let perGroup = [4, 3, 2, 1].first { padded($0) * 5 <= needed * 6 } ?? 1
+		let groups = (needed + perGroup - 1) / perGroup * perGroup
+		let blocks = (cin + 7) / 8
+		var packed = [UInt16](repeating: 0, count: groups * blocks * 9 * 64)
 		let base = w.startIndex
 		for co in 0..<cout {
-			for ci in 0..<cin {
+			for (ci, source) in inputs.enumerated() {
+				let block: Int = (co / 8 * blocks + ci / 8) * 9
+				let lane: Int = ci % 8 * 8 + co % 8
+				let from: Int = base + (co * wcin + source) * 9
 				for k in 0..<9 {
-					packed[((co / 8 * cin + ci) * 9 + k) * 8 + co % 8] = w[base + (co * cin + ci) * 9 + k]
+					packed[(block + k) * 64 + lane] = w[from + k]
 				}
 			}
 		}
@@ -477,6 +583,8 @@ final class FlyHighGenerator {
 			let bb = device.makeBuffer(bytes: biasPadded, length: biasPadded.count * 4, options: .storageModeShared),
 			let sb = device.makeBuffer(bytes: slopePadded, length: slopePadded.count * 4, options: .storageModeShared)
 		else { return nil }
-		return Conv(weights: wb, bias: bb, slope: sb, cin: cin, cout: cout, act: act)
+		return Conv(
+			weights: wb, bias: bb, slope: sb, cin: cin, cout: cout, act: act, groupsPerThreadgroup: perGroup,
+			groups: groups)
 	}
 }

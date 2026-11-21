@@ -13,6 +13,7 @@ using namespace metal;
 // Must match FHInputParams in FlyHighGenerator.swift
 struct FHInputParams {
 	uint oh, ow;     // network size
+	uint lh, ch;     // luma and chroma plane heights
 	int matrix;      // 0 = BT.709, 1 = BT.2020
 	int fullRange;
 };
@@ -32,35 +33,75 @@ static float3 fh_ycbcr_to_rgb(float y, float2 c, int matrix, int fullRange) {
 
 // Antialiased (triangle) downscale, as torch's F.interpolate(antialias=True) in
 // interp.wgsl, of the luma and chroma planes separately, then YCbCr -> RGB.
-static float2 fh_aa_sample(texture2d<float, access::read> tex, uint ox, uint oy, uint ow, uint oh) {
-	float sh = float(tex.get_height()) / float(oh);
-	float sw = float(tex.get_width()) / float(ow);
-	float fsh = max(sh, 1.0), fsw = max(sw, 1.0);
-	float cy = (float(oy) + 0.5) * sh, cx = (float(ox) + 0.5) * sw;
-	int ymin = max(0, int(floor(cy - fsh + 0.5))), ymax = min(int(tex.get_height()), int(floor(cy + fsh + 0.5)));
-	int xmin = max(0, int(floor(cx - fsw + 0.5))), xmax = min(int(tex.get_width()), int(floor(cx + fsw + 0.5)));
-	float2 acc = 0;
-	float norm = 0;
-	for (int y = ymin; y < ymax; y++) {
-		float wy = max(0.0, 1.0 - abs((float(y) + 0.5 - cy) / fsh));
-		for (int x = xmin; x < xmax; x++) {
-			float wx = max(0.0, 1.0 - abs((float(x) + 0.5 - cx) / fsw));
-			float w = wx * wy;
-			acc += tex.read(uint2(x, y)).xy * w;
-			norm += w;
-		}
-	}
-	return acc / norm;
+// The triangle filter is separable, so it's done as a horizontal pass into
+// float rows (`fh_input_h`) then a vertical one (`fh_input_v`).
+
+// The taps of output sample `o` of `size` -> `osize`: [lo, hi) and the centre / width
+struct FHTaps { int lo, hi; float c, f; };
+
+static FHTaps fh_taps(uint o, uint size, uint osize) {
+	float s = float(size) / float(osize);
+	FHTaps t;
+	t.f = max(s, 1.0);
+	t.c = (float(o) + 0.5) * s;
+	t.lo = max(0, int(floor(t.c - t.f + 0.5)));
+	t.hi = min(int(size), int(floor(t.c + t.f + 0.5)));
+	return t;
 }
 
-kernel void fh_input(texture2d<float, access::read> luma [[texture(0)]],
-                     texture2d<float, access::read> chroma [[texture(1)]],
-                     device half *outp [[buffer(0)]],
-                     constant FHInputParams &p [[buffer(1)]],
-                     uint2 gid [[thread_position_in_grid]]) {
+static float fh_tap(FHTaps t, int i) { return max(0.0, 1.0 - abs((float(i) + 0.5 - t.c) / t.f)); }
+
+kernel void fh_input_h(texture2d<float, access::read> luma [[texture(0)]],
+                       texture2d<float, access::read> chroma [[texture(1)]],
+                       device float *yh [[buffer(0)]],
+                       device float2 *ch [[buffer(1)]],
+                       constant FHInputParams &p [[buffer(2)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+	uint x = gid.x, y = gid.y;
+	if (x >= p.ow || y >= p.lh) return;
+	FHTaps t = fh_taps(x, luma.get_width(), p.ow);
+	float acc = 0, norm = 0;
+	for (int i = t.lo; i < t.hi; i++) {
+		float w = fh_tap(t, i);
+		acc += luma.read(uint2(i, y)).r * w;
+		norm += w;
+	}
+	yh[y * p.ow + x] = acc / norm;
+	if (y >= p.ch) return;
+	t = fh_taps(x, chroma.get_width(), p.ow);
+	float2 cacc = 0;
+	norm = 0;
+	for (int i = t.lo; i < t.hi; i++) {
+		float w = fh_tap(t, i);
+		cacc += chroma.read(uint2(i, y)).rg * w;
+		norm += w;
+	}
+	ch[y * p.ow + x] = cacc / norm;
+}
+
+kernel void fh_input_v(device const float *yh [[buffer(0)]],
+                       device const float2 *ch [[buffer(1)]],
+                       device half *outp [[buffer(2)]],
+                       constant FHInputParams &p [[buffer(3)]],
+                       uint2 gid [[thread_position_in_grid]]) {
 	if (gid.x >= p.ow || gid.y >= p.oh) return;
-	float y = fh_aa_sample(luma, gid.x, gid.y, p.ow, p.oh).x;
-	float2 c = fh_aa_sample(chroma, gid.x, gid.y, p.ow, p.oh);
+	FHTaps t = fh_taps(gid.y, p.lh, p.oh);
+	float y = 0, norm = 0;
+	for (int i = t.lo; i < t.hi; i++) {
+		float w = fh_tap(t, i);
+		y += yh[i * p.ow + gid.x] * w;
+		norm += w;
+	}
+	y /= norm;
+	t = fh_taps(gid.y, p.ch, p.oh);
+	float2 c = 0;
+	norm = 0;
+	for (int i = t.lo; i < t.hi; i++) {
+		float w = fh_tap(t, i);
+		c += ch[i * p.ow + gid.x] * w;
+		norm += w;
+	}
+	c /= norm;
 	float3 rgb = fh_ycbcr_to_rgb(y, c, p.matrix, p.fullRange);
 	uint plane = p.oh * p.ow, i = gid.y * p.ow + gid.x;
 	// BGR, as the model was trained
@@ -274,92 +315,118 @@ kernel void fh_blendmix(device const half *wa [[buffer(0)]],
 
 // MARK: - conv.wgsl: 3x3 conv, pad 1, stride S, + activation (+ residual)
 //
-// Each thread makes 4 neighbouring output pixels x 8 output channels, so an
-// input value is read once per 8 channels and the weights (the same for the
-// whole threadgroup) come from cache. Weights are packed by the Swift side as
-// [cout / 8][cin][9 taps][8] halves, bias and slope as floats padded to 8.
+// Run as a matrix multiply on the GPU's 8x8 simdgroup matrix units. A
+// threadgroup of 4 simdgroups makes 32 pixels x R rows x 8 NC output
+// channels; each simdgroup owns 8 of the pixels in every row. For each block
+// of 8 input channels, the input rows it needs are copied (zero padded) to
+// threadgroup memory, then each of the 9 taps is (8 px x 8 cin) x (8 cin x
+// 8 cout), with each weight matrix loaded once for the R rows. For stride 2
+// the copied columns are split into even and odd, so a tap's 8 pixels are
+// still 8 consecutive values.
+//
+// Weights are packed by the Swift side as [cout / 8][cin / 8][9 taps][8 cin][8 cout]
+// halves (zero padded), bias and slope as floats padded the same way.
 // act: 0 = none, 1 = PReLU, 2 = affine_out (2 sigmoid - 1). `res` adds a
 // tensor of the output's shape after the activation (the encoders' and the
-// coarse net's skip connections).
+// coarse net's skip connections). Accumulation is float, as in the engine.
 
 // Must match FHConvParams in FlyHighGenerator.swift
 struct FHConvParams { uint cin, cout, h, w, hout, wout, act, res; };
 
-template <uint S>
-kernel void fh_conv(device const half *inp [[buffer(0)]],
-                    device const half4 *wgt [[buffer(1)]],
-                    device const float4 *bias [[buffer(2)]],
-                    device const float4 *slope [[buffer(3)]],
-                    device half *outp [[buffer(4)]],
-                    device const half *res [[buffer(5)]],
-                    constant FHConvParams &p [[buffer(6)]],
-                    uint3 gid [[thread_position_in_grid]]) {
-	uint x0 = gid.x * 4, yo = gid.y, cog = gid.z;
-	if (x0 >= p.wout || yo >= p.hout) return;
-	constexpr uint NX = 3 * S + 3;
-	float4 a0[4], a1[4];
-	for (uint i = 0; i < 4; i++) {
-		a0[i] = bias[cog * 2];
-		a1[i] = bias[cog * 2 + 1];
-	}
+constant uint FH_ROWS = 2;  // R: output rows per threadgroup
+
+template <uint S, uint NC>
+kernel void fh_mconv(device const half *inp [[buffer(0)]],
+                     device const half *wgt [[buffer(1)]],
+                     device const float *bias [[buffer(2)]],
+                     device const float *slope [[buffer(3)]],
+                     device half *outp [[buffer(4)]],
+                     device const half *res [[buffer(5)]],
+                     constant FHConvParams &p [[buffer(6)]],
+                     uint3 tg [[threadgroup_position_in_grid]],
+                     uint tid [[thread_index_in_threadgroup]],
+                     uint sg [[simdgroup_index_in_threadgroup]]) {
+	constexpr uint R = FH_ROWS;
+	constexpr uint N = S == 1 ? 34 : 33;  // copied columns per parity
+	constexpr uint COLS = S * N;          // >= 31 S + 3
+	constexpr uint TR = S * (R - 1) + 3;  // copied input rows
+	constexpr uint TILE = TR * 8 * COLS;
+	threadgroup half tile[TILE];
+	threadgroup float result[NC * 8 * R * 32];
+
+	uint x0 = tg.x * 32, y0 = tg.y * R, g0 = tg.z * NC;
 	uint plane = p.h * p.w;
-	int xs = int(x0 * S) - 1;
-	device const half4 *wp = wgt + cog * p.cin * 18;
-	for (uint ci = 0; ci < p.cin; ci++, wp += 18) {
-		device const half *ip = inp + ci * plane;
-		for (uint ky = 0; ky < 3; ky++) {
-			int yi = int(yo * S + ky) - 1;
-			if (yi < 0 || yi >= int(p.h)) continue;
-			device const half *row = ip + yi * int(p.w);
-			float v[NX];
-			for (uint j = 0; j < NX; j++) {
-				int xi = xs + int(j);
-				v[j] = (xi >= 0 && xi < int(p.w)) ? float(row[xi]) : 0.0;
-			}
-			for (uint kx = 0; kx < 3; kx++) {
-				float4 w0 = float4(wp[(ky * 3 + kx) * 2]), w1 = float4(wp[(ky * 3 + kx) * 2 + 1]);
-				for (uint px = 0; px < 4; px++) {
-					float x = v[px * S + kx];
-					a0[px] = fma(x, w0, a0[px]);
-					a1[px] = fma(x, w1, a1[px]);
-				}
+	int xs = int(x0 * S) - 1, ys = int(y0 * S) - 1;
+	uint blocks = (p.cin + 7) / 8;
+
+	simdgroup_float8x8 acc[R][NC];
+	for (uint r = 0; r < R; r++)
+		for (uint j = 0; j < NC; j++) acc[r][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+	for (uint cb = 0; cb < blocks; cb++) {
+		for (uint i = tid; i < TILE; i += 128) {
+			uint c = i % COLS, r = i / COLS;  // r = tile row * 8 + channel
+			uint ci = cb * 8 + r % 8;
+			int xi = xs + int(c), yi = ys + int(r / 8);
+			half v = 0;
+			if (ci < p.cin && xi >= 0 && xi < int(p.w) && yi >= 0 && yi < int(p.h))
+				v = inp[ci * plane + uint(yi) * p.w + uint(xi)];
+			tile[(r * S + c % S) * N + c / S] = v;
+		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
+		for (uint k = 0; k < 9; k++) {
+			uint ky = k / 3, kx = k % 3;
+			simdgroup_half8x8 b[NC];
+			for (uint j = 0; j < NC; j++) simdgroup_load(b[j], wgt + (((g0 + j) * blocks + cb) * 9 + k) * 64, 8);
+			for (uint r = 0; r < R; r++) {
+				simdgroup_half8x8 a;
+				// a[pixel][channel]: channels are COLS apart
+				simdgroup_load(a, tile + ((r * S + ky) * 8 * S + kx % S) * N + 8 * sg + kx / S, COLS, ulong2(0, 0),
+				               true);
+				for (uint j = 0; j < NC; j++) simdgroup_multiply_accumulate(acc[r][j], a, b[j], acc[r][j]);
 			}
 		}
+		threadgroup_barrier(mem_flags::mem_threadgroup);
 	}
-	float4 s0 = slope[cog * 2], s1 = slope[cog * 2 + 1];
+
+	// result[cout][row][pixel], then the epilogue writes rows of pixels
+	for (uint r = 0; r < R; r++)
+		for (uint j = 0; j < NC; j++)
+			simdgroup_store(acc[r][j], result + (j * 8 * R + r) * 32 + 8 * sg, R * 32, ulong2(0, 0), true);
+	threadgroup_barrier(mem_flags::mem_threadgroup);
 	uint oplane = p.hout * p.wout;
-	for (uint px = 0; px < 4; px++) {
-		uint xo = x0 + px;
-		if (xo >= p.wout) break;
-		for (uint k = 0; k < 8; k++) {
-			uint co = cog * 8 + k;
-			if (co >= p.cout) break;
-			float v = k < 4 ? a0[px][k] : a1[px][k - 4];
-			if (p.act == 1) {
-				float s = k < 4 ? s0[k] : s1[k - 4];
-				v = v > 0.0 ? v : s * v;
-			} else if (p.act == 2) {
-				v = 2.0 / (1.0 + exp(-v)) - 1.0;
-			}
-			uint o = co * oplane + yo * p.wout + xo;
-			if (p.res) v += float(res[o]);
-			outp[o] = half(v);
+	for (uint i = tid; i < NC * 8 * R * 32; i += 128) {
+		uint co = g0 * 8 + i / (R * 32), yo = y0 + (i / 32) % R, xo = x0 + i % 32;
+		if (co >= p.cout || xo >= p.wout || yo >= p.hout) continue;
+		float v = result[i] + bias[co];
+		if (p.act == 1) {
+			v = v > 0.0 ? v : slope[co] * v;
+		} else if (p.act == 2) {
+			v = 2.0 / (1.0 + exp(-v)) - 1.0;
 		}
+		uint o = co * oplane + yo * p.wout + xo;
+		if (p.res) v += float(res[o]);
+		outp[o] = half(v);
 	}
 }
 
-template [[host_name("fh_conv1")]] [[kernel]] void fh_conv<1>(
-	device const half *inp [[buffer(0)]], device const half4 *wgt [[buffer(1)]],
-	device const float4 *bias [[buffer(2)]], device const float4 *slope [[buffer(3)]],
-	device half *outp [[buffer(4)]], device const half *res [[buffer(5)]],
-	constant FHConvParams &p [[buffer(6)]], uint3 gid [[thread_position_in_grid]]);
-template [[host_name("fh_conv2")]] [[kernel]] void fh_conv<2>(
-	device const half *inp [[buffer(0)]], device const half4 *wgt [[buffer(1)]],
-	device const float4 *bias [[buffer(2)]], device const float4 *slope [[buffer(3)]],
-	device half *outp [[buffer(4)]], device const half *res [[buffer(5)]],
-	constant FHConvParams &p [[buffer(6)]], uint3 gid [[thread_position_in_grid]]);
+#define FH_MCONV(S, NC) \
+	template [[host_name("fh_mconv_" #S "_" #NC)]] [[kernel]] void fh_mconv<S, NC>( \
+		device const half *inp [[buffer(0)]], device const half *wgt [[buffer(1)]], \
+		device const float *bias [[buffer(2)]], device const float *slope [[buffer(3)]], \
+		device half *outp [[buffer(4)]], device const half *res [[buffer(5)]], \
+		constant FHConvParams &p [[buffer(6)]], uint3 tg [[threadgroup_position_in_grid]], \
+		uint tid [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]]);
+FH_MCONV(1, 1)
+FH_MCONV(1, 2)
+FH_MCONV(1, 3)
+FH_MCONV(1, 4)
+FH_MCONV(2, 1)
+FH_MCONV(2, 2)
+FH_MCONV(2, 3)
+FH_MCONV(2, 4)
 
-// MARK: - Small helpers: channel copy (a scaled view), fill, accumulate
+// MARK: - Small helpers: channel copy (a scaled view), accumulate
 
 // Must match FHCopyParams in FlyHighGenerator.swift
 struct FHCopyParams { uint c, h, w, c0; float scale; };
@@ -373,11 +440,6 @@ kernel void fh_chcopy(device const half *inp [[buffer(0)]],
 	outp[(c * p.h + y) * p.w + x] = half(float(inp[((c + p.c0) * p.h + y) * p.w + x]) * p.scale);
 }
 
-kernel void fh_fill(device half *outp [[buffer(0)]],
-                    constant uint &n [[buffer(1)]],
-                    uint gid [[thread_position_in_grid]]) {
-	if (gid < n) outp[gid] = 0;
-}
 
 kernel void fh_addto(device half *acc [[buffer(0)]],
                      device const half *d [[buffer(1)]],
