@@ -17,6 +17,9 @@ final class FrameCapture {
 		case repeated
 		/// An in-between frame that wasn't made because we were behind
 		case skipped
+		/// An in-between frame that wasn't made because frames were lost or
+		/// late before this real one, so the two real frames aren't neighbours
+		case gap
 	}
 
 	enum CaptureError: LocalizedError {

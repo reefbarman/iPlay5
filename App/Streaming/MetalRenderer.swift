@@ -55,6 +55,10 @@ final class MetalRenderer {
 	/// repeats, and how many stream frames ago that frame came
 	private var lastSignature: [UInt8] = []
 	private var framesSinceNew = 1
+	/// Video thread only: when the last new frame arrived, and whether the
+	/// stream lost frames since (see `noteLostFrames`)
+	private var lastNewFrameAt: CFTimeInterval = 0
+	private var lostSinceNew = false
 	/// Debug: the last few seconds of frames shown, for the capture button (nil when off)
 	private var capture: FrameCapture?
 	/// Video thread only: new real frames so far, numbering pairs in a capture
@@ -67,6 +71,8 @@ final class MetalRenderer {
 	private(set) var skippedFrames = 0
 	/// Repeats of the last frame dropped while generating (a 30 fps game in a 60 fps stream) (stats)
 	private(set) var repeatedFrames = 0
+	/// In-between frames not made because frames before the real one were lost or late (stats)
+	private(set) var gapFrames = 0
 	/// GPU time to make one in-between frame, smoothed (stats)
 	private(set) var generateMs: Double = 0
 	/// What frame generation is actually running, if it differs from what was picked (stats)
@@ -175,6 +181,12 @@ final class MetalRenderer {
 
 	// MARK: - Rendering (decoder thread)
 
+	/// The stream lost frames before the next one to be decoded. Video thread
+	/// (decoding is synchronous, so this comes before that frame's `display`).
+	func noteLostFrames() {
+		lostSinceNew = true
+	}
+
 	func display(_ pixelBuffer: CVPixelBuffer) {
 		lock.lock()
 		let layer = self.layer
@@ -197,6 +209,8 @@ final class MetalRenderer {
 			activeGenerator = generator
 			lastSignature = []
 			framesSinceNew = 1
+			lastNewFrameAt = 0
+			lostSinceNew = false
 			lock.withLock { self.generateMs = 0 }
 		}
 		if let capture {
@@ -225,6 +239,11 @@ final class MetalRenderer {
 		// the game frame lasts. Up to two repeats in a row (20 fps); after that
 		// the frame counts as new, so a still scene keeps updating.
 		var gap = interval
+		// Frames lost, or a hitch (the console or network stalled): the last
+		// real frame and this one can be several game frames apart, too far
+		// for the motion search, so blending them makes things vanish or
+		// smear. Show only the real frame then.
+		var discontinuity = false
 		if generator != nil {
 			let signature = Self.lumaSignature(pixelBuffer, tenBit: tenBit)
 			if framesSinceNew < 3, Self.isRepeat(signature, of: lastSignature) {
@@ -236,6 +255,10 @@ final class MetalRenderer {
 			gap = interval * Double(framesSinceNew)
 			lastSignature = signature
 			framesSinceNew = 1
+			let now = CACurrentMediaTime()
+			discontinuity = lostSinceNew || (lastNewFrameAt > 0 && now - lastNewFrameAt > gap * 2.5)
+			lastNewFrameAt = now
+			lostSinceNew = false
 		}
 		realFrames += 1
 
@@ -302,7 +325,10 @@ final class MetalRenderer {
 				}
 				// Two or more still waiting for the screen: we're behind, so show
 				// only the real frame rather than queue up more delay
-				if inFlight >= 2 {
+				if discontinuity {
+					gapFrames += 1
+					capture?.note(.gap, pair: realFrames)
+				} else if inFlight >= 2 {
 					skippedFrames += 1
 					capture?.note(.skipped, pair: realFrames)
 				} else if let drawable = layer.nextDrawable(), let outLuma = generator.outLuma,

@@ -38,6 +38,8 @@ final class FrameGenerator: FrameInterpolator {
 	private let gradient: MTLComputePipelineState
 	private let reduce2: MTLComputePipelineState
 	private let coarse: MTLComputePipelineState
+	private let smoothCoarse: MTLComputePipelineState
+	private let global: MTLComputePipelineState
 	private let fine: MTLComputePipelineState
 	private let smooth: MTLComputePipelineState
 	private let densify: MTLComputePipelineState
@@ -55,9 +57,13 @@ final class FrameGenerator: FrameInterpolator {
 		var gradients: [MTLTexture]
 		var eighth: [MTLTexture]
 		var coarseField: MTLTexture
+		/// coarseField after a median
+		var coarseSmooth: MTLTexture
 		var fineField: MTLTexture
 		/// This pair's patch motion and the last pair's, swapped each time
 		var smoothFields: [MTLTexture]
+		/// This pair's dominant motion and the last pair's (1x1), swapped with smoothFields
+		var globalMotion: [MTLTexture]
 		/// Per 1/4 pixel motion
 		var flow: MTLTexture
 		var outLuma: MTLTexture
@@ -78,6 +84,11 @@ final class FrameGenerator: FrameInterpolator {
 	var motion: MTLTexture? { textures?.flow }
 	/// The last patch motion, before merging
 	var patchMotion: MTLTexture? { textures.map { $0.smoothFields[fieldIndex ^ 1] } }
+	/// The last coarse search and patch motion before the median, for scripts/fgbench
+	var coarseMotion: MTLTexture? { textures?.coarseField }
+	var rawPatchMotion: MTLTexture? { textures?.fineField }
+	/// The last dominant motion (x, y, share of the frame that agreed), for scripts/fgbench
+	var dominantMotion: MTLTexture? { textures.map { $0.globalMotion[fieldIndex ^ 1] } }
 	/// Storage format of the motion map (`.rg32Float` or `.rg16Float`).
 	/// Settable for scripts/fgbench's A/B; changing it starts over.
 	var flowFormat: MTLPixelFormat = .rg32Float {
@@ -90,7 +101,9 @@ final class FrameGenerator: FrameInterpolator {
 			return try? device.makeComputePipelineState(function: function)
 		}
 		guard let reduce4 = make("fg_reduce4"), let gradient = make("fg_gradient"), let reduce2 = make("fg_reduce2"),
-			let coarse = make("fg_coarse"), let fine = make("fg_fine"), let smooth = make("fg_smooth"),
+			let coarse = make("fg_coarse"), let smoothCoarse = make("fg_smooth_coarse"), let global = make("fg_global"),
+			let fine = make("fg_fine"),
+			let smooth = make("fg_smooth"),
 			let densify = make("fg_densify"), let synthLuma = make("fg_synth_luma"),
 			let synthChroma = make("fg_synth_chroma")
 		else { return nil }
@@ -99,6 +112,8 @@ final class FrameGenerator: FrameInterpolator {
 		self.gradient = gradient
 		self.reduce2 = reduce2
 		self.coarse = coarse
+		self.smoothCoarse = smoothCoarse
+		self.global = global
 		self.fine = fine
 		self.smooth = smooth
 		self.densify = densify
@@ -159,10 +174,17 @@ final class FrameGenerator: FrameInterpolator {
 		encoder.dispatchThreadgroups(
 			MTLSize(width: Int(params.coarseCount.x), height: Int(params.coarseCount.y), depth: 1),
 			threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+		dispatch(encoder, smoothCoarse, [t.coarseField, t.coarseSmooth], t.coarseSmooth)
+		// One threadgroup for the whole frame (up to 1024 threads, FG_GLOBAL_SAMPLES)
+		encoder.setComputePipelineState(global)
+		encoder.setTextures([t.coarseSmooth, t.globalMotion[fieldIndex]], range: 0..<2)
+		encoder.dispatchThreadgroups(
+			MTLSize(width: 1, height: 1, depth: 1),
+			threadsPerThreadgroup: MTLSize(width: min(1024, global.maxTotalThreadsPerThreadgroup), height: 1, depth: 1))
 		dispatch(
 			encoder, fine,
-			[t.quarter[prev], t.quarter[current], t.coarseField, t.fineField, priorField, t.gradients[prev],
-			 t.gradients[current]],
+			[t.quarter[prev], t.quarter[current], t.coarseSmooth, t.fineField, priorField, t.gradients[prev],
+			 t.gradients[current], t.globalMotion[fieldIndex], t.globalMotion[fieldIndex ^ 1]],
 			t.fineField, count: params.fineCount)
 		dispatch(encoder, smooth, [t.fineField, field], field, count: params.fineCount)
 		dispatch(encoder, densify, [t.quarter[prev], t.quarter[current], field, t.flow], t.flow)
@@ -218,9 +240,11 @@ final class FrameGenerator: FrameInterpolator {
 			let flow = texture(flowFormat, qw, qh),
 			let e0 = texture(.r16Float, ew, eh), let e1 = texture(.r16Float, ew, eh),
 			let coarseField = texture(.rg32Float, Int(coarseCount.x), Int(coarseCount.y)),
+			let coarseSmooth = texture(.rg32Float, Int(coarseCount.x), Int(coarseCount.y)),
 			let fineField = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),
 			let smooth0 = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),
 			let smooth1 = texture(.rg32Float, Int(fineCount.x), Int(fineCount.y)),
+			let global0 = texture(.rgba32Float, 1, 1), let global1 = texture(.rgba32Float, 1, 1),
 			let outLuma = texture(luma.pixelFormat, width, height),
 			let outChroma = texture(chroma.pixelFormat, chroma.width, chroma.height)
 		else {
@@ -235,8 +259,9 @@ final class FrameGenerator: FrameInterpolator {
 			coarseCount: coarseCount, fineCount: fineCount)
 		textures = Textures(
 			width: width, height: height, lumaFormat: luma.pixelFormat, chromaFormat: chroma.pixelFormat,
-			quarter: [q0, q1], gradients: [g0, g1], eighth: [e0, e1], coarseField: coarseField, fineField: fineField,
-			smoothFields: [smooth0, smooth1], flow: flow, outLuma: outLuma, outChroma: outChroma, params: params)
+			quarter: [q0, q1], gradients: [g0, g1], eighth: [e0, e1], coarseField: coarseField,
+			coarseSmooth: coarseSmooth, fineField: fineField,
+			smoothFields: [smooth0, smooth1], globalMotion: [global0, global1], flow: flow, outLuma: outLuma, outChroma: outChroma, params: params)
 		log.notice("Frame generation ready for \(width)x\(height)")
 		return true
 	}

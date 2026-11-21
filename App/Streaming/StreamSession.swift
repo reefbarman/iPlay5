@@ -341,7 +341,10 @@ final class StreamSession {
 	// MARK: - Callbacks (chiaki threads)
 
 	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32) -> Bool {
-		if lost > 0 { lostFrames &+= lost }
+		if lost > 0 {
+			lostFrames &+= lost
+			renderer?.noteLostFrames()
+		}
 		guard let decoder else { return true }
 		return decoder.decode(buf, count: size)
 	}

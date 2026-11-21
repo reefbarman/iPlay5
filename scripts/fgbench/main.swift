@@ -3,6 +3,9 @@
 //
 //   scripts/fgbench/run.sh [custom|flyhigh] [--save NAME | --compare NAME] [--iters N]
 //
+// `--replay CAPTURE_DIR` runs on a frame capture from the phone instead (see
+// replay.swift).
+//
 // `--flow rg16` stores the custom generator's motion map as rg16Float
 // instead of rg32Float. `--save` / `--compare` also cover its motion fields.
 //
@@ -153,10 +156,6 @@ func savePGM(_ bytes: [UInt8], _ w: Int, _ h: Int, _ name: String) {
 // MARK: - Run
 
 print("device: \(device.name)")
-let t0 = Date()
-let a = upload(frame(0, noise: noiseLevel, seed: 100)), b = upload(frame(1, noise: noiseLevel, seed: 200))
-let truth = frame(0.5)
-print(String(format: "frames made in %.1f s", Date().timeIntervalSince(t0)))
 
 /// Reads a two-channel float texture (rg32Float or rg16Float) as floats
 func readVectors(_ t: MTLTexture) -> [Float] {
@@ -231,6 +230,19 @@ default:
 	fh.level = Int(arg("--level") ?? "") ?? 0
 	generator = fh
 }
+
+// Real footage from the phone instead of synthetic frames (replay.swift)
+if let dir = arg("--replay") {
+	replay(dir, generator: generator, device: device, queue: queue, outDir: outDir,
+		name: arg("--name") ?? URL(fileURLWithPath: dir).lastPathComponent.replacingOccurrences(of: " ", with: "_"),
+		from: Int(arg("--from") ?? "") ?? Int.min, to: Int(arg("--to") ?? "") ?? Int.max)
+	exit(0)
+}
+
+let t0 = Date()
+let a = upload(frame(0, noise: noiseLevel, seed: 100)), b = upload(frame(1, noise: noiseLevel, seed: 200))
+let truth = frame(0.5)
+print(String(format: "frames made in %.1f s", Date().timeIntervalSince(t0)))
 
 func gpuMs(_ cb: MTLCommandBuffer) -> Double { (cb.gpuEndTime - cb.gpuStartTime) * 1000 }
 

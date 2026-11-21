@@ -150,16 +150,72 @@ kernel void fg_coarse(texture2d<float, access::read> prev [[texture(0)]],
 	field.write(float4(float2(total) * 4.0, 0, 0), block);
 }
 
+// The frame's dominant motion (camera pan, map scroll): the coarse vector with
+// the most others close to it, averaged with them. Up to FG_GLOBAL_SAMPLES
+// coarse vectors, evenly spread. Writes (motion, share of vectors that agree).
+constant int FG_GLOBAL_SAMPLES = 512;
+constant float FG_GLOBAL_NEAR = 4.5;  // full px: one coarse step either way counts as the same motion
+
+kernel void fg_global(texture2d<float, access::read> coarse [[texture(0)]],
+                      texture2d<float, access::write> out [[texture(1)]],
+                      constant FGParams &p [[buffer(0)]],
+                      uint tid [[thread_index_in_threadgroup]],
+                      uint threads [[threads_per_threadgroup]]) {
+	threadgroup float2 v[FG_GLOBAL_SAMPLES];
+	threadgroup int support[FG_GLOBAL_SAMPLES];
+	int n = p.coarseCount.x * p.coarseCount.y;
+	int stride = (n + FG_GLOBAL_SAMPLES - 1) / FG_GLOBAL_SAMPLES;
+	int m = (n + stride - 1) / stride;
+	for (int i = int(tid); i < m; i += int(threads)) {
+		int k = i * stride;
+		v[i] = coarse.read(uint2(k % p.coarseCount.x, k / p.coarseCount.x)).xy;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	for (int i = int(tid); i < m; i += int(threads)) {
+		int s = 0;
+		for (int j = 0; j < m; j++) {
+			float2 d = abs(v[i] - v[j]);
+			s += d.x + d.y <= FG_GLOBAL_NEAR ? 1 : 0;
+		}
+		support[i] = s;
+	}
+	threadgroup_barrier(mem_flags::mem_threadgroup);
+	if (tid != 0) return;
+	int best = 0;
+	for (int i = 1; i < m; i++) {
+		if (support[i] > support[best]) best = i;
+	}
+	float2 sum = 0;
+	for (int j = 0; j < m; j++) {
+		float2 d = abs(v[best] - v[j]);
+		if (d.x + d.y <= FG_GLOBAL_NEAR) sum += v[j];
+	}
+	out.write(float4(sum / float(support[best]), float(support[best]) / float(m), 0), uint2(0));
+}
+
 // `prior` is last pair's motion for this block. Flat areas (pole and trunk
 // interiors) and repeating detail (windows) match many vectors about equally,
 // so without it the pick changes every frame and the edges flicker. A small
 // pull towards last frame's answer keeps those picks steady.
+//
+// `dominant` is the frame's dominant motion (x, y, share of the frame that
+// agreed). Things drawn on their own layer (map labels and icons) move a
+// little differently from what's under them, so they don't match well under
+// any vector, and one that lands them on plain ground can win, which erases
+// them. Vectors far from the dominant motion pay for it, by how much of the
+// frame agreed: only a clearly better match (a car, its own textured object)
+// gets one.
+constant float FG_DOMINANT_FREE = 8.0;  // full px of half motion from the dominant motion that's free
+constant float FG_DOMINANT_PULL = 0.02;
+
 static float fg_fine_cost(texture2d<float, access::sample> prev, texture2d<float, access::sample> curr,
-                          float2 base, float2 d, float2 prior, float2 quarterSize) {
+                          float2 base, float2 d, float2 prior, float4 dominant, float2 quarterSize) {
 	float2 dq = d * 0.25;
 	float2 inv = 1.0 / quarterSize;
 	float2 dp = abs(d - prior);
-	float sad = 0.002 * (abs(d.x) + abs(d.y)) + 0.006 * (dp.x + dp.y);
+	float2 dd = abs(d - dominant.xy);
+	float sad = 0.002 * (abs(d.x) + abs(d.y)) + 0.006 * (dp.x + dp.y)
+	          + FG_DOMINANT_PULL * dominant.z * max(0.0, dd.x + dd.y - FG_DOMINANT_FREE);
 	for (int y = -1; y <= FG_BLOCK; y++) {
 		for (int x = -1; x <= FG_BLOCK; x++) {
 			float2 q = base + float2(x, y) + 0.5;
@@ -188,28 +244,46 @@ kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
                     texture2d<float, access::read> priorField [[texture(4)]],
                     texture2d<float, access::sample> prevG [[texture(5)]],
                     texture2d<float, access::sample> currG [[texture(6)]],
+                    texture2d<float, access::read> globalNow [[texture(7)]],
+                    texture2d<float, access::read> globalPrev [[texture(8)]],
                     constant FGParams &p [[buffer(0)]],
                     constant int &hasPrior [[buffer(1)]],
                     uint2 gid [[thread_position_in_grid]]) {
 	if (int(gid.x) >= p.fineCount.x || int(gid.y) >= p.fineCount.y) return;
 	float2 base = float2(gid) * float(FG_BLOCK);
 	int2 cell = int2(gid) / 2;
-	float2 prior = hasPrior ? priorField.read(gid).xy : float2(0);
+	// Last pair's motion, moved on by however much the dominant motion
+	// changed: when a pan speeds up or turns (scrolling the map), flat areas
+	// would otherwise keep last pair's motion and drag what's on them (map
+	// icons) the wrong way. Only when most of the frame agreed on it both times.
+	float4 gNow = globalNow.read(uint2(0)), gPrev = globalPrev.read(uint2(0));
+	float2 prior = 0;
+	if (hasPrior) {
+		prior = priorField.read(gid).xy;
+		if (gNow.z > 0.25 && gPrev.z > 0.25) prior += gNow.xy - gPrev.xy;
+	}
 
 	float2 bestD = float2(0);
-	float best = fg_fine_cost(prev, curr, base, bestD, prior, p.quarterSize);
+	float best = fg_fine_cost(prev, curr, base, bestD, prior, gNow, p.quarterSize);
 	if (hasPrior) {
-		float cost = fg_fine_cost(prev, curr, base, prior, prior, p.quarterSize);
+		float cost = fg_fine_cost(prev, curr, base, prior, prior, gNow, p.quarterSize);
 		if (cost < best) {
 			best = cost;
 			bestD = prior;
+		}
+	}
+	{
+		float cost = fg_fine_cost(prev, curr, base, gNow.xy, prior, gNow, p.quarterSize);
+		if (cost < best) {
+			best = cost;
+			bestD = gNow.xy;
 		}
 	}
 	for (int cy = -1; cy <= 1; cy++) {
 		for (int cx = -1; cx <= 1; cx++) {
 			int2 c = clamp(cell + int2(cx, cy), int2(0), p.coarseCount - 1);
 			float2 d = coarse.read(uint2(c)).xy;
-			float cost = fg_fine_cost(prev, curr, base, d, prior, p.quarterSize);
+			float cost = fg_fine_cost(prev, curr, base, d, prior, gNow, p.quarterSize);
 			if (cost < best) {
 				best = cost;
 				bestD = d;
@@ -245,21 +319,17 @@ kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
 	}
 	// Keep it only if it's really better: a step can run off on a patch
 	// that's mostly another moving object
-	if (fg_fine_cost(prev, curr, base, d, prior, p.quarterSize) < best) bestD = d;
+	if (fg_fine_cost(prev, curr, base, d, prior, gNow, p.quarterSize) < best) bestD = d;
 	field.write(float4(bestD, 0, 0), gid);
 }
 
 // 3x3 vector median: removes lone wrong vectors without blurring motion edges
-kernel void fg_smooth(texture2d<float, access::read> src [[texture(0)]],
-                      texture2d<float, access::write> dst [[texture(1)]],
-                      constant FGParams &p [[buffer(0)]],
-                      uint2 gid [[thread_position_in_grid]]) {
-	if (int(gid.x) >= p.fineCount.x || int(gid.y) >= p.fineCount.y) return;
+static float2 fg_median(texture2d<float, access::read> src, int2 at, int2 count) {
 	float2 v[9];
 	int n = 0;
 	for (int y = -1; y <= 1; y++) {
 		for (int x = -1; x <= 1; x++) {
-			int2 c = clamp(int2(gid) + int2(x, y), int2(0), p.fineCount - 1);
+			int2 c = clamp(at + int2(x, y), int2(0), count - 1);
 			v[n++] = src.read(uint2(c)).xy;
 		}
 	}
@@ -276,7 +346,26 @@ kernel void fg_smooth(texture2d<float, access::read> src [[texture(0)]],
 			bestV = v[i];
 		}
 	}
-	dst.write(float4(bestV, 0, 0), gid);
+	return bestV;
+}
+
+kernel void fg_smooth(texture2d<float, access::read> src [[texture(0)]],
+                      texture2d<float, access::write> dst [[texture(1)]],
+                      constant FGParams &p [[buffer(0)]],
+                      uint2 gid [[thread_position_in_grid]]) {
+	if (int(gid.x) >= p.fineCount.x || int(gid.y) >= p.fineCount.y) return;
+	dst.write(float4(fg_median(src, int2(gid), p.fineCount), 0, 0), gid);
+}
+
+// The same on the coarse search: in flat areas (sky, plain parts of the map)
+// the search can lock on to anything, and one stray vector there is enough
+// for a patch to pick it
+kernel void fg_smooth_coarse(texture2d<float, access::read> src [[texture(0)]],
+                             texture2d<float, access::write> dst [[texture(1)]],
+                             constant FGParams &p [[buffer(0)]],
+                             uint2 gid [[thread_position_in_grid]]) {
+	if (int(gid.x) >= p.coarseCount.x || int(gid.y) >= p.coarseCount.y) return;
+	dst.write(float4(fg_median(src, int2(gid), p.coarseCount), 0, 0), gid);
 }
 
 // One vector per 1/4 pixel from the patches around it: each patch's vector,
