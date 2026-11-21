@@ -41,10 +41,18 @@ final class StreamSession {
 		case needsPIN(incorrect: Bool)
 		/// The connection dropped and we're trying again
 		case reconnecting(attempt: Int)
+		/// Settings changed that need a new connection. Retries until it connects or is cancelled.
+		case applyingSettings(attempt: Int)
+		/// We asked the console to go to rest mode and the connection is closed
+		case consoleAsleep
 		case ended(error: String?)
 	}
 
 	static let maxReconnectAttempts = 3
+	/// Longest wait between attempts while reconnecting for new settings
+	private static let maxSettingsRetryDelay: Double = 5
+	/// How long to wait for the console to close the connection after a rest mode request
+	private static let sleepTimeout: Double = 5
 
 	private(set) var state: State = .idle
 	private(set) var stats = StreamStats()
@@ -54,6 +62,10 @@ final class StreamSession {
 	private(set) var paused = false
 	/// Debug frame capture: saving, saved or failed (shown by the capture button)
 	private(set) var captureStatus: String?
+	/// Asked the console to go to rest mode, waiting for it to close the connection
+	private(set) var goingToSleep = false
+	/// A short message for the user, e.g. a rest mode request that failed
+	private(set) var notice: String?
 
 	let console: Console
 	private(set) var settings: StreamSettings
@@ -63,7 +75,9 @@ final class StreamSession {
 	@ObservationIgnored private let audio = AudioOutput()
 	@ObservationIgnored private var decoder: VideoDecoder?
 	@ObservationIgnored private var handle: OpaquePointer?
-	@ObservationIgnored private var selfRef: Unmanaged<StreamSession>?
+	@ObservationIgnored private var connectionRef: Unmanaged<Connection>?
+	/// Bumped on every teardown, so late events from an old connection are ignored
+	@ObservationIgnored private var connectionID = 0
 	@ObservationIgnored private var statsTimer: Timer?
 	@ObservationIgnored private var lastDecoded = 0
 	@ObservationIgnored private var lastGenerated = 0
@@ -76,6 +90,20 @@ final class StreamSession {
 	@ObservationIgnored private var extraButtons: UInt32 = 0
 	@ObservationIgnored private var reconnectAttempt = 0
 	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
+	@ObservationIgnored private var sleepWork: DispatchWorkItem?
+	@ObservationIgnored private var noticeWork: DispatchWorkItem?
+
+	/// What chiaki's callbacks point at: this session plus which connection they belong to.
+	/// Tearing a connection down makes chiaki send a "stopped" event that reaches the main
+	/// thread later, and it must not end the connection that replaced it.
+	private final class Connection {
+		let session: StreamSession
+		let id: Int
+		init(session: StreamSession, id: Int) {
+			self.session = session
+			self.id = id
+		}
+	}
 
 	init(console: Console, settings: StreamSettings) {
 		self.console = console
@@ -95,7 +123,10 @@ final class StreamSession {
 			state = .ended(error: "Metal isn't available on this device.")
 			return
 		}
-		if case .reconnecting = state {} else { state = .connecting }
+		switch state {
+		case .reconnecting, .applyingSettings: break
+		default: state = .connecting
+		}
 		keyboardText = nil
 		lostFrames = 0
 		lastDecoded = 0
@@ -127,36 +158,38 @@ final class StreamSession {
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
 		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
-		let ref = Unmanaged.passRetained(self)
-		selfRef = ref
+		let ref = Unmanaged.passRetained(Connection(session: self, id: connectionID))
+		connectionRef = ref
 		var callbacks = CKSessionCallbacks()
 		callbacks.user = ref.toOpaque()
 		callbacks.on_video = { user, buf, size, lost, _ in
 			guard let user, let buf else { return true }
-			return Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue().handleVideo(buf, Int(size), lost)
+			return Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.handleVideo(buf, Int(size), lost)
 		}
 		callbacks.on_event = { user, type, code, message in
 			guard let user else { return }
-			let session = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
+			let connection = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue()
 			let text = message.map { String(cString: $0) }
-			DispatchQueue.main.async { session.handleEvent(type, code: code, message: text) }
+			DispatchQueue.main.async {
+				connection.session.handleEvent(type, code: code, message: text, connection: connection.id)
+			}
 		}
 		callbacks.on_rumble = { user, left, right in
 			guard let user else { return }
-			Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue().handleRumble(left, right)
+			Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.handleRumble(left, right)
 		}
 		callbacks.on_trigger_effects = { user, tl, l, tr, r in
 			guard let user, let l, let r else { return }
 			let left = Array(UnsafeBufferPointer(start: l, count: 10))
 			let right = Array(UnsafeBufferPointer(start: r, count: 10))
-			let session = Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue()
+			let session = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session
 			DispatchQueue.main.async {
 				session.input.applyTriggerEffect(typeLeft: tl, left: left, typeRight: tr, right: right)
 			}
 		}
 		callbacks.on_haptics = { user, samples, frames in
 			guard let user, let samples else { return }
-			Unmanaged<StreamSession>.fromOpaque(user).takeUnretainedValue().handleHaptics(samples, Int(frames))
+			Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.handleHaptics(samples, Int(frames))
 		}
 		callbacks.on_log = { _, level, message in
 			guard let message else { return }
@@ -170,7 +203,7 @@ final class StreamSession {
 		}
 		guard let created else {
 			ref.release()
-			selfRef = nil
+			connectionRef = nil
 			state = .ended(error: "Couldn't create the Remote Play session.")
 			return
 		}
@@ -206,8 +239,14 @@ final class StreamSession {
 	/// Stops streaming and frees everything. Safe to call more than once.
 	func stop() {
 		cancelReconnect()
+		sleepWork?.cancel()
+		sleepWork = nil
+		goingToSleep = false
 		teardown()
-		if case .ended = state {} else { state = .ended(error: nil) }
+		switch state {
+		case .ended, .consoleAsleep: break
+		default: state = .ended(error: nil)
+		}
 	}
 
 	/// Manual reconnect from the "Disconnected" screen
@@ -231,7 +270,25 @@ final class StreamSession {
 		}
 	}
 
+	/// Settings restarts retry anything except reasons that won't change by trying again
+	private static func isRetryableForSettings(quitReason code: Int32) -> Bool {
+		switch code {
+		case 1, 6, 12, 13: false  // STOPPED, RP_VERSION_MISMATCH, REMOTE_SHUTDOWN, PSN_REGIST_FAILED
+		default: true
+		}
+	}
+
+	/// Reconnects with the current settings, retrying until it works or is cancelled
+	private func restartForSettings() {
+		cancelReconnect()
+		teardown()
+		reconnectAttempt = 1
+		state = .applyingSettings(attempt: 1)
+		start()
+	}
+
 	/// Applies new settings. Codec/resolution/bitrate/HDR changes need a reconnect.
+	/// A pending retry picks up the latest settings when it runs.
 	func apply(_ new: StreamSettings) {
 		let needsReconnect =
 			new.resolution != settings.resolution || new.fps != settings.fps || new.bitrateMbps != settings.bitrateMbps
@@ -240,9 +297,8 @@ final class StreamSession {
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.rumble.enabled = new.rumble
 		renderer?.setDisplayMode(new.displayMode)
-		if needsReconnect, handle != nil {
-			teardown()
-			start()
+		if needsReconnect, handle != nil, !goingToSleep {
+			restartForSettings()
 		} else {
 			configureRenderer()
 		}
@@ -296,9 +352,37 @@ final class StreamSession {
 		state = .connecting
 	}
 
+	/// Asks the console to go to rest mode, then ends the session once it closes the
+	/// connection (or after a short wait if it doesn't) without offering a reconnect.
 	func putConsoleToSleep() {
-		guard let handle else { return }
-		ck_session_goto_bed(handle)
+		guard let handle, !goingToSleep else { return }
+		let err = ck_session_goto_bed(handle)
+		guard err == 0 else {
+			log.error("Rest mode request failed (error \(err))")
+			showNotice("Couldn't put \(console.name) in rest mode (error \(err)).")
+			return
+		}
+		goingToSleep = true
+		cancelReconnect()
+		let work = DispatchWorkItem { [weak self] in self?.finishSleep() }
+		sleepWork = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + Self.sleepTimeout, execute: work)
+	}
+
+	private func finishSleep() {
+		sleepWork?.cancel()
+		sleepWork = nil
+		goingToSleep = false
+		teardown()
+		state = .consoleAsleep
+	}
+
+	private func showNotice(_ text: String) {
+		notice = text
+		noticeWork?.cancel()
+		let work = DispatchWorkItem { [weak self] in self?.notice = nil }
+		noticeWork = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: work)
 	}
 
 	// MARK: - Text input
@@ -333,8 +417,9 @@ final class StreamSession {
 		handle = nil
 		decoder?.invalidate()
 		decoder = nil
-		selfRef?.release()
-		selfRef = nil
+		connectionRef?.release()
+		connectionRef = nil
+		connectionID &+= 1
 		UIApplication.shared.isIdleTimerDisabled = false
 	}
 
@@ -367,7 +452,9 @@ final class StreamSession {
 
 	// MARK: - Events (main thread)
 
-	private func handleEvent(_ type: CKEventType, code: Int32, message: String?) {
+	private func handleEvent(_ type: CKEventType, code: Int32, message: String?, connection: Int) {
+		// From a connection we've already torn down
+		guard connection == connectionID else { return }
 		switch type {
 		case CK_EVENT_CONNECTED:
 			reconnectAttempt = 0
@@ -389,7 +476,21 @@ final class StreamSession {
 			}
 			// Tear down off the callback thread (we're on main via async)
 			teardown()
-			if wasError, wasPlaying, Self.isRetryable(quitReason: code), reconnectAttempt < Self.maxReconnectAttempts {
+			if goingToSleep {
+				// The console closed the connection because we put it to sleep
+				finishSleep()
+			} else if case .applyingSettings = state, Self.isRetryableForSettings(quitReason: code) {
+				// e.g. the console still thinks the old connection is in use: keep trying
+				reconnectAttempt += 1
+				let attempt = reconnectAttempt
+				log.notice("Reconnect for new settings failed (\(message ?? "?", privacy: .public)), attempt \(attempt)")
+				state = .applyingSettings(attempt: attempt)
+				let work = DispatchWorkItem { [weak self] in self?.start() }
+				reconnectWork = work
+				// 1 s, 2 s, 4 s, then every 5 s
+				let delay = min(pow(2, Double(attempt - 2)), Self.maxSettingsRetryDelay)
+				DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+			} else if wasError, wasPlaying, Self.isRetryable(quitReason: code), reconnectAttempt < Self.maxReconnectAttempts {
 				reconnectAttempt += 1
 				let attempt = reconnectAttempt
 				log.notice("Connection lost (\(message ?? "?", privacy: .public)), reconnect attempt \(attempt)")

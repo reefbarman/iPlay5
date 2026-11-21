@@ -66,6 +66,10 @@ struct StreamView: View {
 			flashSettingsHint()
 			revealFGButton()
 		}
+		// Rest mode worked: straight back to the console list, no Reconnect screen
+		.onChange(of: session?.state == .consoleAsleep) { _, asleep in
+			if asleep { dismiss() }
+		}
 		.onChange(of: phone.isHot) { _, hot in
 			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
 		}
@@ -119,6 +123,11 @@ struct StreamView: View {
 
 			if showHeatWarning {
 				heatWarning
+					.transition(.opacity)
+			}
+
+			if let notice = session?.notice {
+				noticeBanner(notice)
 					.transition(.opacity)
 			}
 
@@ -374,6 +383,21 @@ struct StreamView: View {
 		.allowsHitTesting(false)
 	}
 
+	private func noticeBanner(_ text: String) -> some View {
+		HStack(spacing: 8) {
+			Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+			Text(text)
+		}
+		.font(.subheadline.weight(.semibold))
+		.foregroundStyle(.white)
+		.padding(.horizontal, 14)
+		.padding(.vertical, 8)
+		.background(.black.opacity(0.7), in: Capsule())
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+		.padding(.top, 16)
+		.allowsHitTesting(false)
+	}
+
 	private func hintLabel(_ text: String) -> some View {
 		Text(text)
 			.font(.subheadline.weight(.semibold))
@@ -418,6 +442,13 @@ struct StreamView: View {
 				Text("Connecting to \(console.name)…").foregroundStyle(.secondary)
 				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
 			}
+		case .streaming where session.goingToSleep, .consoleAsleep:
+			VStack(spacing: 12) {
+				ProgressView().controlSize(.large)
+				Text("Putting \(console.name) in rest mode…").font(.headline)
+			}
+			.padding(24)
+			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
 		case .streaming:
 			if session.settings.showStats {
 				StatsOverlay(stats: session.stats, settings: session.settings)
@@ -448,6 +479,17 @@ struct StreamView: View {
 				ProgressView().controlSize(.large)
 				Text("Connection lost. Reconnecting…").font(.headline)
 				Text("Attempt \(attempt) of \(StreamSession.maxReconnectAttempts)").foregroundStyle(.secondary)
+				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+			}
+			.padding(24)
+			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+		case .applyingSettings(let attempt):
+			VStack(spacing: 12) {
+				ProgressView().controlSize(.large)
+				Text("Reconnecting with new settings…").font(.headline)
+				if attempt > 1 {
+					Text("\(console.name) isn't ready yet. Attempt \(attempt)").foregroundStyle(.secondary)
+				}
 				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
 			}
 			.padding(24)
