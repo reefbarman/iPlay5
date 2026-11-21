@@ -135,6 +135,8 @@ struct StreamSettings: Codable, Equatable {
 	/// Experimental: make an in-between frame for each pair of real ones
 	var frameGenMode: FrameGenMode = .off
 	var frameGeneration: Bool { frameGenMode != .off }
+	/// Debug: a button on the stream that saves the last few seconds of frames
+	var frameCapture: Bool = false
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
@@ -158,6 +160,7 @@ struct StreamSettings: Codable, Equatable {
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 		frameGenMode = try c.decodeIfPresent(FrameGenMode.self, forKey: .frameGenMode) ?? d.frameGenMode
+		frameCapture = try c.decodeIfPresent(Bool.self, forKey: .frameCapture) ?? d.frameCapture
 	}
 }
 

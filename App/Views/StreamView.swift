@@ -112,6 +112,9 @@ struct StreamView: View {
 
 			if let session, session.state == .streaming, !folded, !portrait {
 				frameGenButton(session)
+				if session.settings.frameCapture {
+					captureButton(session)
+				}
 			}
 
 			if showHeatWarning {
@@ -316,6 +319,38 @@ struct StreamView: View {
 		.buttonStyle(.plain)
 		.accessibilityLabel("Frame generation: \(mode.label). Tap to change.")
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+		.ignoresSafeArea()
+	}
+
+	// MARK: - Frame capture (debug, bottom left)
+
+	/// Saves the last few seconds of frames, real and generated, for a closer look
+	private func captureButton(_ session: StreamSession) -> some View {
+		Button {
+			session.saveFrameCapture()
+		} label: {
+			HStack(spacing: 8) {
+				Image(systemName: "record.circle")
+					.font(.title3)
+					.foregroundStyle(.red)
+				if let status = session.captureStatus {
+					Text(status)
+						.font(.caption.weight(.semibold))
+						.foregroundStyle(.white)
+						.lineLimit(2)
+				}
+			}
+			.padding(.horizontal, 10)
+			.padding(.vertical, 6)
+			.background(.black.opacity(0.45), in: Capsule())
+			.opacity(session.captureStatus == nil ? 0.6 : 1)
+			.padding(.bottom, 12)
+			.padding(.leading, 16)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel("Save the last few seconds of frames")
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
 		.ignoresSafeArea()
 	}
 

@@ -59,6 +59,14 @@ struct StreamSettingsForm: View {
 		} footer: {
 			Text("Phone gyro is used when the controller has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
 		}
+
+		Section {
+			Toggle("Frame capture button", isOn: $settings.frameCapture)
+		} header: {
+			Text("Debug")
+		} footer: {
+			Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to Files › On My iPhone › iPlay5 › Frame captures. Uses up to about 800 MB of memory while on.")
+		}
 	}
 }
 

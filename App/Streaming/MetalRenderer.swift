@@ -55,6 +55,10 @@ final class MetalRenderer {
 	/// repeats, and how many stream frames ago that frame came
 	private var lastSignature: [UInt8] = []
 	private var framesSinceNew = 1
+	/// Debug: the last few seconds of frames shown, for the capture button (nil when off)
+	private var capture: FrameCapture?
+	/// Video thread only: new real frames so far, numbering pairs in a capture
+	private var realFrames = 0
 
 	/// Frames presented (stats)
 	private(set) var presentedFrames = 0
@@ -107,7 +111,9 @@ final class MetalRenderer {
 	}
 
 	/// Frame generation should only be on when the screen can show twice `fps`
-	func configure(hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGen: FrameGenMode, fps: Int) {
+	func configure(
+		hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGen: FrameGenMode, fps: Int, frameCapture: Bool
+	) {
 		let changed = lock.withLock { () -> Bool in
 			let changed = self.hdrOutput != hdr
 			self.hdrOutput = hdr
@@ -115,6 +121,11 @@ final class MetalRenderer {
 			self.bicubic = bicubic
 			self.frameGenMode = frameGen
 			self.frameInterval = 1.0 / Double(max(fps, 1))
+			if frameCapture, capture == nil {
+				capture = FrameCapture(device: device)
+			} else if !frameCapture {
+				capture = nil
+			}
 			return changed
 		}
 		if changed, let layer = lock.withLock({ self.layer }) {
@@ -128,6 +139,15 @@ final class MetalRenderer {
 
 	func setPaused(_ paused: Bool) {
 		lock.withLock { self.paused = paused }
+	}
+
+	/// Saves the frame capture at the next decoded frame (see FrameCapture)
+	func saveCapture(_ completion: @escaping (Result<(URL, Int), Error>) -> Void) {
+		guard let capture = lock.withLock({ capture }) else {
+			completion(.failure(FrameCapture.CaptureError.off))
+			return
+		}
+		capture.requestSave(completion)
 	}
 
 	func setDrawableSize(_ size: CGSize) {
@@ -167,6 +187,7 @@ final class MetalRenderer {
 		let interval = frameInterval
 		let inFlight = self.inFlight
 		let generateMs = self.generateMs
+		let capture = self.capture
 		lock.unlock()
 
 		let generator = paused ? nil : pickGenerator(frameGenMode)
@@ -177,6 +198,17 @@ final class MetalRenderer {
 			lastSignature = []
 			framesSinceNew = 1
 			lock.withLock { self.generateMs = 0 }
+		}
+		if let capture {
+			let name: String
+			if let custom = generator as? FrameGenerator {
+				name = "custom (motion map \(custom.flowFormat == .rg16Float ? "rg16Float" : "rg32Float"))"
+			} else if let flyHigh = generator as? FlyHighGenerator {
+				name = "flyhigh \(flyHigh.status)"
+			} else {
+				name = "off"
+			}
+			capture.frameStart(generator: name, streamFps: Int((1 / interval).rounded()))
 		}
 		guard !paused, let layer, target.width > 0, target.height > 0, let cache = textureCache else { return }
 
@@ -198,12 +230,14 @@ final class MetalRenderer {
 			if framesSinceNew < 3, Self.isRepeat(signature, of: lastSignature) {
 				framesSinceNew += 1
 				repeatedFrames += 1
+				capture?.note(.repeated, pair: realFrames)
 				return
 			}
 			gap = interval * Double(framesSinceNew)
 			lastSignature = signature
 			framesSinceNew = 1
 		}
+		realFrames += 1
 
 		guard let luma = makeTexture(pixelBuffer, plane: 0, format: tenBit ? .r16Unorm : .r8Unorm, cache: cache),
 			let chroma = makeTexture(pixelBuffer, plane: 1, format: tenBit ? .rg16Unorm : .rg8Unorm, cache: cache),
@@ -251,6 +285,8 @@ final class MetalRenderer {
 		// frame later. Costs half a frame of delay, since the in-between needs
 		// the newer frame.
 		var generated = false
+		/// The in-between frame shown, for the capture (copied in the next command buffer)
+		var capturedGenerated: (seq: Int, luma: MTLTexture, chroma: MTLTexture)?
 		if let generator {
 			let paired = generator.push(
 				luma: lumaTex, chroma: chromaTex, bt2020: bt2020, fullRange: fullRange, into: commandBuffer)
@@ -268,6 +304,7 @@ final class MetalRenderer {
 				// only the real frame rather than queue up more delay
 				if inFlight >= 2 {
 					skippedFrames += 1
+					capture?.note(.skipped, pair: realFrames)
 				} else if let drawable = layer.nextDrawable(), let outLuma = generator.outLuma,
 					let outChroma = generator.outChroma
 				{
@@ -280,7 +317,9 @@ final class MetalRenderer {
 						guard let self, ms > 0 else { return }
 						self.lock.withLock { self.generateMs = self.generateMs == 0 ? ms : self.generateMs * 0.9 + ms * 0.1 }
 					}
-					track(drawable)
+					let seq = capture?.reserve(.generated, pair: realFrames)
+					if let seq { capturedGenerated = (seq, outLuma, outChroma) }
+					track(drawable, captureSeq: seq, capture: capture)
 					commandBuffer.present(drawable)
 					commandBuffer.commit()
 					generatedFrames += 1
@@ -292,18 +331,32 @@ final class MetalRenderer {
 			self.previous = (luma, chroma)
 		}
 
-		guard let drawable = layer.nextDrawable() else {
-			commandBuffer.commit()
-			return
-		}
-		draw(luma: lumaTex, chroma: chromaTex, uniforms: &uniforms, to: drawable, in: commandBuffer)
-
 		// Keep the CVMetalTextures alive until the GPU is done with them
 		commandBuffer.addCompletedHandler { _ in
 			_ = luma
 			_ = chroma
 		}
-		track(drawable)
+		// Capture copies go in this command buffer, after the in-between was
+		// drawn and before the next one overwrites the generator's output
+		var realSeq: Int?
+		if let capture {
+			if let g = capturedGenerated {
+				capture.copy(
+					seq: g.seq, luma: g.luma, chroma: g.chroma, bt2020: bt2020, fullRange: fullRange, into: commandBuffer)
+			}
+			realSeq = capture.reserve(.real, pair: realFrames)
+			if let realSeq {
+				capture.copy(
+					seq: realSeq, luma: lumaTex, chroma: chromaTex, bt2020: bt2020, fullRange: fullRange, into: commandBuffer)
+			}
+		}
+
+		guard let drawable = layer.nextDrawable() else {
+			commandBuffer.commit()
+			return
+		}
+		draw(luma: lumaTex, chroma: chromaTex, uniforms: &uniforms, to: drawable, in: commandBuffer)
+		track(drawable, captureSeq: realSeq, capture: capture)
 		if generated {
 			// Slightly under half, so a late frame doesn't push every following one later
 			commandBuffer.present(drawable, afterMinimumDuration: gap * 0.45)
@@ -400,9 +453,10 @@ final class MetalRenderer {
 	}
 
 	/// Counts the drawable as in flight until it reaches the screen (or is dropped)
-	private func track(_ drawable: CAMetalDrawable) {
+	private func track(_ drawable: CAMetalDrawable, captureSeq: Int? = nil, capture: FrameCapture? = nil) {
 		lock.withLock { inFlight += 1 }
-		drawable.addPresentedHandler { [weak self] _ in
+		drawable.addPresentedHandler { [weak self] shown in
+			if let captureSeq, let capture { capture.presented(seq: captureSeq, at: shown.presentedTime) }
 			guard let self else { return }
 			self.lock.withLock { self.inFlight -= 1 }
 		}

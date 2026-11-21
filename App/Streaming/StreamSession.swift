@@ -52,6 +52,8 @@ final class StreamSession {
 	private(set) var keyboardText: String?
 	/// Folded or backgrounded: video isn't drawn and audio is muted, connection stays up
 	private(set) var paused = false
+	/// Debug frame capture: saving, saved or failed (shown by the capture button)
+	private(set) var captureStatus: String?
 
 	let console: Console
 	private(set) var settings: StreamSettings
@@ -255,7 +257,26 @@ final class StreamSession {
 	private func configureRenderer() {
 		renderer?.configure(
 			hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling,
-			frameGen: frameGenerationActive ? settings.frameGenMode : .off, fps: settings.fps)
+			frameGen: frameGenerationActive ? settings.frameGenMode : .off, fps: settings.fps,
+			frameCapture: settings.frameCapture)
+	}
+
+	/// Debug: saves the last few seconds of frames (see FrameCapture)
+	func saveFrameCapture() {
+		guard let renderer, captureStatus != "Saving…" else { return }
+		captureStatus = "Saving…"
+		renderer.saveCapture { [weak self] result in
+			guard let self else { return }
+			switch result {
+			case .success(let (dir, count)):
+				captureStatus = "Saved \(count) frames: Files › iPlay5 › Frame captures › \(dir.lastPathComponent)"
+			case .failure(let error):
+				captureStatus = "Capture failed: \(error.localizedDescription)"
+			}
+			DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+				if self?.captureStatus != "Saving…" { self?.captureStatus = nil }
+			}
+		}
 	}
 
 	func setPaused(_ paused: Bool) {
