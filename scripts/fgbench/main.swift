@@ -6,8 +6,11 @@
 // `--replay CAPTURE_DIR` runs on a frame capture from the phone instead (see
 // replay.swift).
 //
-// `--flow rg16` stores the custom generator's motion map as rg16Float
-// instead of rg32Float. `--save` / `--compare` also cover its motion fields.
+// `--flow rg32` stores the custom generator's motion map as rg32Float
+// instead of rg16Float. `--save` / `--compare` also cover its motion fields.
+//
+// `--level N` picks the quality level (both generators; they normally step
+// down on their own when the GPU can't keep up).
 //
 // Frames are 1920x1080 NV12 (video range): a panning textured background
 // with thin lines, a block moving the other way over it, and a static HUD.
@@ -214,7 +217,7 @@ func checkVectorReadback(_ format: MTLPixelFormat) {
 	precondition(got == known, "\(format) readback mismatch: \(got)")
 }
 
-let flowFormat: MTLPixelFormat = arg("--flow") == "rg16" ? .rg16Float : .rg32Float
+let flowFormat: MTLPixelFormat = arg("--flow") == "rg32" ? .rg32Float : .rg16Float
 let generator: FrameInterpolator
 switch which {
 case "custom":
@@ -222,9 +225,10 @@ case "custom":
 	checkVectorReadback(.rg16Float)
 	let fg = FrameGenerator(device: device, library: library)!
 	fg.flowFormat = flowFormat
+	fg.level = Int(arg("--level") ?? "") ?? 0
 	generator = fg
-	print("motion map: \(flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), 32-bit float filtering: "
-		+ "\(device.supports32BitFloatFiltering ? "yes" : "NO")")
+	print("motion map: \(flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), level \(fg.level), "
+		+ "32-bit float filtering: \(device.supports32BitFloatFiltering ? "yes" : "NO")")
 default:
 	let fh = FlyHighGenerator(device: device, library: library)!
 	fh.level = Int(arg("--level") ?? "") ?? 0

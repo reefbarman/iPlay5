@@ -21,9 +21,60 @@ protocol FrameInterpolator: AnyObject {
 	func interpolate(
 		previous: (luma: MTLTexture, chroma: MTLTexture), current frame: (luma: MTLTexture, chroma: MTLTexture),
 		into commandBuffer: MTLCommandBuffer)
+	/// Steps quality down when generating takes too long (see QualityStepper).
+	/// Call once per pair. Returns true if the level changed.
+	func adapt(generateMs: Double, interval: Double) -> Bool
+	/// What it's running at, for the stats overlay ("" for full quality)
+	var status: String { get }
 }
 
 extension FlyHighGenerator: FrameInterpolator {}
+
+/// Steps a generator's quality level down when the GPU time per generated
+/// frame is over budget for a while (e.g. the phone throttles as it warms
+/// up), and back up when the next level up should fit with room to spare.
+struct QualityStepper {
+	/// Rough GPU time of each level relative to the first, best first
+	let costs: [Double]
+	/// Pairs since the last level change, and how long the GPU time has been
+	/// over / under budget
+	private var pairsSinceChange = 0
+	private var overBudget = 0
+	private var underBudget = 0
+
+	init(costs: [Double]) {
+		self.costs = costs
+	}
+
+	mutating func reset() {
+		pairsSinceChange = 0
+		overBudget = 0
+		underBudget = 0
+	}
+
+	/// The level to use after this pair, given `generateMs` (smoothed GPU
+	/// time per generated frame) at `level`. `interval` is the time between
+	/// real frames; the budget is half of it, since the generated frame is
+	/// shown half a frame before the real one and its GPU time adds to the
+	/// delay. Call once per pair.
+	mutating func next(from level: Int, generateMs: Double, interval: Double) -> Int {
+		pairsSinceChange += 1
+		// Let the smoothed time catch up with the last change first
+		guard generateMs > 0, pairsSinceChange > 45, costs.indices.contains(level) else { return level }
+		let budget = interval * 1000 * 0.5
+		overBudget = generateMs > budget ? overBudget + 1 : 0
+		let upCost = level > 0 ? generateMs / costs[level] * costs[level - 1] : .infinity
+		underBudget = upCost < budget * 0.75 ? underBudget + 1 : 0
+		var next = level
+		if overBudget > 20, level + 1 < costs.count {
+			next = level + 1
+		} else if underBudget > 240, level > 0 {
+			next = level - 1
+		}
+		if next != level { reset() }
+		return next
+	}
+}
 
 /// Custom frame generation: makes the picture halfway between two decoded
 /// frames with a motion search (blocks, then Lucas-Kanade patches merged into
@@ -43,8 +94,22 @@ final class FrameGenerator: FrameInterpolator {
 	private let fine: MTLComputePipelineState
 	private let smooth: MTLComputePipelineState
 	private let densify: MTLComputePipelineState
-	private let synthLuma: MTLComputePipelineState
-	private let synthChroma: MTLComputePipelineState
+	/// fg_synth at each quality level (`fgSynthLevel` in FrameGen.metal)
+	private let synth: [MTLComputePipelineState]
+
+	/// Synthesis quality levels, best first, and their rough GPU time
+	/// relative to the first (whole generator, scripts/fgbench on an M5 Pro
+	/// with phone captures, rounded down so stepping back up is cautious).
+	/// See `fgSynthLevel` in FrameGen.metal.
+	private static let levels: [(name: String, cost: Double)] = [
+		("", 1.0), ("one tap", 0.65), ("2x2", 0.58),
+	]
+	/// Settable for testing; `adapt` normally drives it
+	var level = 0 {
+		didSet { level = min(max(level, 0), Self.levels.count - 1) }
+	}
+	private var stepper = QualityStepper(costs: FrameGenerator.levels.map(\.cost))
+	var status: String { level == 0 ? "" : "level \(level) (\(Self.levels[level].name))" }
 
 	private struct Textures {
 		var width: Int
@@ -89,9 +154,11 @@ final class FrameGenerator: FrameInterpolator {
 	var rawPatchMotion: MTLTexture? { textures?.fineField }
 	/// The last dominant motion (x, y, share of the frame that agreed), for scripts/fgbench
 	var dominantMotion: MTLTexture? { textures.map { $0.globalMotion[fieldIndex ^ 1] } }
-	/// Storage format of the motion map (`.rg32Float` or `.rg16Float`).
+	/// Storage format of the motion map (`.rg16Float` or `.rg32Float`).
+	/// Half precision is plenty for motion, quicker to read, and can be
+	/// filtered on every GPU (32-bit float filtering is optional on iPhones).
 	/// Settable for scripts/fgbench's A/B; changing it starts over.
-	var flowFormat: MTLPixelFormat = .rg32Float {
+	var flowFormat: MTLPixelFormat = .rg16Float {
 		didSet { if flowFormat != oldValue { reset() } }
 	}
 
@@ -100,12 +167,19 @@ final class FrameGenerator: FrameInterpolator {
 			guard let function = library.makeFunction(name: name) else { return nil }
 			return try? device.makeComputePipelineState(function: function)
 		}
+		func makeSynth(_ level: Int) -> MTLComputePipelineState? {
+			let constants = MTLFunctionConstantValues()
+			var value = Int32(level)
+			constants.setConstantValue(&value, type: .int, index: 0)
+			guard let function = try? library.makeFunction(name: "fg_synth", constantValues: constants) else { return nil }
+			return try? device.makeComputePipelineState(function: function)
+		}
+		let synth = Self.levels.indices.compactMap(makeSynth)
 		guard let reduce4 = make("fg_reduce4"), let gradient = make("fg_gradient"), let reduce2 = make("fg_reduce2"),
 			let coarse = make("fg_coarse"), let smoothCoarse = make("fg_smooth_coarse"), let global = make("fg_global"),
 			let fine = make("fg_fine"),
 			let smooth = make("fg_smooth"),
-			let densify = make("fg_densify"), let synthLuma = make("fg_synth_luma"),
-			let synthChroma = make("fg_synth_chroma")
+			let densify = make("fg_densify"), synth.count == Self.levels.count
 		else { return nil }
 		self.device = device
 		self.reduce4 = reduce4
@@ -117,8 +191,7 @@ final class FrameGenerator: FrameInterpolator {
 		self.fine = fine
 		self.smooth = smooth
 		self.densify = densify
-		self.synthLuma = synthLuma
-		self.synthChroma = synthChroma
+		self.synth = synth
 	}
 
 	/// Frees the textures and forgets the previous frame
@@ -126,6 +199,15 @@ final class FrameGenerator: FrameInterpolator {
 		textures = nil
 		hasPrevious = false
 		hasPriorField = false
+		stepper.reset()
+	}
+
+	func adapt(generateMs: Double, interval: Double) -> Bool {
+		let next = stepper.next(from: level, generateMs: generateMs, interval: interval)
+		guard next != level else { return false }
+		log.notice("Frame gen: \(String(format: "%.1f", generateMs)) ms per frame, quality level \(self.level) -> \(next)")
+		level = next
+		return true
 	}
 
 	/// Adds the newest frame. Returns true when there's a previous frame of the
@@ -189,11 +271,11 @@ final class FrameGenerator: FrameInterpolator {
 			t.fineField, count: params.fineCount)
 		dispatch(encoder, smooth, [t.fineField, field], field, count: params.fineCount)
 		dispatch(encoder, densify, [t.quarter[prev], t.quarter[current], field, t.flow], t.flow)
-		let global = t.globalMotion[fieldIndex]
-		dispatch(encoder, synthLuma, [previous.luma, frame.luma, t.flow, t.outLuma, global], t.outLuma)
+		// One thread per chroma pixel, making the 2x2 luma pixels under it too
 		dispatch(
-			encoder, synthChroma,
-			[previous.luma, frame.luma, previous.chroma, frame.chroma, t.flow, t.outChroma, global], t.outChroma)
+			encoder, synth[level],
+			[previous.luma, frame.luma, previous.chroma, frame.chroma, t.flow, t.outLuma, t.outChroma,
+			 t.globalMotion[fieldIndex]], t.outChroma)
 		encoder.endEncoding()
 		fieldIndex ^= 1
 		hasPriorField = true
@@ -217,13 +299,19 @@ final class FrameGenerator: FrameInterpolator {
 
 	private func prepare(luma: MTLTexture, chroma: MTLTexture) -> Bool {
 		if let t = textures, t.width == luma.width, t.height == luma.height,
-			t.lumaFormat == luma.pixelFormat, t.chromaFormat == chroma.pixelFormat
+			t.lumaFormat == luma.pixelFormat, t.chromaFormat == chroma.pixelFormat,
+			t.outChroma.width == chroma.width, t.outChroma.height == chroma.height
 		{
 			return true
 		}
 		reset()
 		let width = luma.width
 		let height = luma.height
+		// Synthesis makes each chroma pixel with the 2x2 luma pixels under it
+		guard chroma.width == (width + 1) / 2, chroma.height == (height + 1) / 2 else {
+			log.error("Frame generation: needs 4:2:0, got \(width)x\(height) luma, \(chroma.width)x\(chroma.height) chroma")
+			return false
+		}
 		let qw = max(width / 4, 1)
 		let qh = max(height / 4, 1)
 		let ew = max(qw / 2, 1)

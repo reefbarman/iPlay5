@@ -216,7 +216,7 @@ final class MetalRenderer {
 		if let capture {
 			let name: String
 			if let custom = generator as? FrameGenerator {
-				name = "custom (motion map \(custom.flowFormat == .rg16Float ? "rg16Float" : "rg32Float"))"
+				name = "custom (motion map \(custom.flowFormat == .rg16Float ? "rg16Float" : "rg32Float"), level \(custom.level))"
 			} else if let flyHigh = generator as? FlyHighGenerator {
 				name = "flyhigh \(flyHigh.status)"
 			} else {
@@ -316,11 +316,9 @@ final class MetalRenderer {
 			if paired, let previous, let prevLuma = CVMetalTextureGetTexture(previous.luma),
 				let prevChroma = CVMetalTextureGetTexture(previous.chroma)
 			{
-				// FlyHigh steps its quality down when it can't keep up (e.g. the
-				// phone throttling) and back up when there's room
-				if let flyHigh = generator as? FlyHighGenerator,
-					flyHigh.adapt(generateMs: generateMs, interval: gap)
-				{
+				// Generators step their quality down when they can't keep up
+				// (e.g. the phone throttling) and back up when there's room
+				if generator.adapt(generateMs: generateMs, interval: gap) {
 					lock.withLock { self.generateMs = 0 }
 				}
 				// Two or more still waiting for the screen: we're behind, so show
@@ -438,6 +436,7 @@ final class MetalRenderer {
 			picked = nil
 		case .custom:
 			picked = customGenerator
+			if let customGenerator, !customGenerator.status.isEmpty { status = "quality \(customGenerator.status)" }
 		case .flyHigh:
 			if flyHighGenerator == nil, !flyHighFailed {
 				flyHighGenerator = FlyHighGenerator(device: device, library: library)

@@ -48,11 +48,7 @@ final class FlyHighGenerator {
 	}
 	private var iterations: Int { Self.levels[level].iterations }
 	private var networkLines: Int { Self.levels[level].lines }
-	/// For `adapt`: pairs since the last level change, and how long the
-	/// GPU time has been over / under budget
-	private var pairsSinceChange = 0
-	private var overBudget = 0
-	private var underBudget = 0
+	private var stepper = QualityStepper(costs: FlyHighGenerator.levels.map(\.cost))
 
 	private let device: MTLDevice
 	private let pipelines: [String: MTLComputePipelineState]
@@ -196,38 +192,17 @@ final class FlyHighGenerator {
 	func reset() {
 		state = nil
 		hasPrevious = false
-		pairsSinceChange = 0
-		overBudget = 0
-		underBudget = 0
+		stepper.reset()
 	}
 
-	/// Steps the quality level down when `generateMs` (smoothed GPU time per
-	/// generated frame) is over budget for a while, and back up when the next
-	/// level up should fit with room to spare. `interval` is the time between
-	/// real frames; the budget is half of it, since the generated frame is
-	/// shown half a frame before the real one and its GPU time adds to the
-	/// delay. Call once per pair. Returns true if the level changed (the
-	/// caller should restart its smoothing).
+	/// Steps the network size / passes down when it can't keep up (see
+	/// QualityStepper). Returns true if the level changed (the caller should
+	/// restart its smoothing).
 	func adapt(generateMs: Double, interval: Double) -> Bool {
-		pairsSinceChange += 1
-		// Let the smoothed time catch up with the last change first
-		guard generateMs > 0, pairsSinceChange > 45 else { return false }
-		let budget = interval * 1000 * 0.5
-		overBudget = generateMs > budget ? overBudget + 1 : 0
-		let upCost = level > 0 ? generateMs / Self.levels[level].cost * Self.levels[level - 1].cost : .infinity
-		underBudget = upCost < budget * 0.75 ? underBudget + 1 : 0
-		var next = level
-		if overBudget > 20, level + 1 < Self.levels.count {
-			next = level + 1
-		} else if underBudget > 240, level > 0 {
-			next = level - 1
-		}
+		let next = stepper.next(from: level, generateMs: generateMs, interval: interval)
 		guard next != level else { return false }
 		log.notice("FlyHigh: \(String(format: "%.1f", generateMs)) ms per frame, quality level \(self.level) -> \(next)")
 		level = next
-		pairsSinceChange = 0
-		overBudget = 0
-		underBudget = 0
 		return true
 	}
 

@@ -268,6 +268,14 @@ static float fg_fine_cost(texture2d<float, access::sample> prev, texture2d<float
 	return sad;
 }
 
+// Whether `v` is one of the first `n` vectors in `tried`: neighbouring coarse
+// blocks often agree, and the same vector again costs the same, so can't win
+static bool fg_tried(thread const float2 *tried, int n, float2 v) {
+	bool seen = false;
+	for (int k = 0; k < n; k++) seen = seen || all(v == tried[k]);
+	return seen;
+}
+
 constant int FG_PATCH_LO = -2, FG_PATCH_HI = 6;  // patch rows/columns around each 4x4 block (8x8)
 constant int FG_LK_STEPS = 3;
 constant float FG_LK_PRIOR = 2e-4;  // pull towards last pair's vector: wins in flat areas only
@@ -308,14 +316,19 @@ kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
 
 	float2 bestD = float2(0);
 	float best = fg_fine_cost(prev, curr, base, bestD, prior, gNow, p.quarterSize);
-	if (hasPrior) {
+	float2 tried[12];
+	int nTried = 0;
+	tried[nTried++] = float2(0);
+	if (hasPrior && !fg_tried(tried, nTried, prior)) {
+		tried[nTried++] = prior;
 		float cost = fg_fine_cost(prev, curr, base, prior, prior, gNow, p.quarterSize);
 		if (cost < best) {
 			best = cost;
 			bestD = prior;
 		}
 	}
-	{
+	if (!fg_tried(tried, nTried, gNow.xy)) {
+		tried[nTried++] = gNow.xy;
 		float cost = fg_fine_cost(prev, curr, base, gNow.xy, prior, gNow, p.quarterSize);
 		if (cost < best) {
 			best = cost;
@@ -326,6 +339,8 @@ kernel void fg_fine(texture2d<float, access::sample> prev [[texture(0)]],
 		for (int cx = -1; cx <= 1; cx++) {
 			int2 c = clamp(cell + int2(cx, cy), int2(0), p.coarseCount - 1);
 			float2 d = coarse.read(uint2(c)).xy;
+			if (fg_tried(tried, nTried, d)) continue;
+			tried[nTried++] = d;
 			float cost = fg_fine_cost(prev, curr, base, d, prior, gNow, p.quarterSize);
 			if (cost < best) {
 				best = cost;
@@ -453,6 +468,21 @@ constant int FG_CANDIDATES = 6;
 constant float FG_EDGE_REACH = 8.0;  // full px: where the other side of an edge's motion is read
 constant float FG_EDGE_COST = 0.025; // cost given to a candidate that runs off the screen edge
 
+// Synthesis quality level, one pipeline each (FrameGenerator.levels). Lower
+// levels are cheaper and are used when the GPU can't keep up:
+// 0: each pixel judges its candidates on three taps per frame (about 3x3)
+// 1: one tap per frame: the whole generator takes about a third less time,
+//    a little less steady on thin detail
+// 2: each 2x2 block of pixels shares one choice, judged on its four pixels:
+//    about 40% less time, edges between motions land on 2 px steps
+constant int fgSynthLevel [[function_constant(0)]];
+
+// Whether a luma sample at `q` is off the screen, where the sampler only
+// repeats the border
+static bool fg_offscreen(float2 q, constant FGParams &p) {
+	return any(q < -0.5) || any(q > p.lumaSize + 0.5);
+}
+
 // Candidate weights for the pixel at full-size luma position `pos`: the motion
 // map here, the motion map a little way off in each direction (at an object's
 // edge, one of those has the pure motion of each side) and zero motion.
@@ -484,7 +514,8 @@ struct FGCandidates {
 };
 
 static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, texture2d<float, access::sample> currY,
-                                  texture2d<float, access::sample> flow, float2 pos, constant FGParams &p) {
+                                  texture2d<float, access::sample> flow, float2 pos, constant FGParams &p,
+                                  bool threeTaps) {
 	FGCandidates c;
 	float2 inv = 1.0 / p.lumaSize;
 	const float2 offsets[4] = { float2(FG_EDGE_REACH, 0), float2(-FG_EDGE_REACH, 0),
@@ -508,12 +539,16 @@ static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, textur
 		float2 pb = pos + c.d[j];
 		float a = prevY.sample(fgLinear, pa * inv).r;
 		float b = currY.sample(fgLinear, pb * inv).r;
-		// Two more taps between pixels, each the average of a 2x2: covers about 3x3
-		float a1 = prevY.sample(fgLinear, (pa - 0.5) * inv).r;
-		float b1 = currY.sample(fgLinear, (pb - 0.5) * inv).r;
-		float a2 = prevY.sample(fgLinear, (pa + 0.5) * inv).r;
-		float b2 = currY.sample(fgLinear, (pb + 0.5) * inv).r;
-		cost[j] = (abs(a - b) + abs(a1 - b1) + abs(a2 - b2)) * (1.0 / 3.0);
+		if (threeTaps) {
+			// Two more taps between pixels, each the average of a 2x2: covers about 3x3
+			float a1 = prevY.sample(fgLinear, (pa - 0.5) * inv).r;
+			float b1 = currY.sample(fgLinear, (pb - 0.5) * inv).r;
+			float a2 = prevY.sample(fgLinear, (pa + 0.5) * inv).r;
+			float b2 = currY.sample(fgLinear, (pb + 0.5) * inv).r;
+			cost[j] = (abs(a - b) + abs(a1 - b1) + abs(a2 - b2)) * (1.0 / 3.0);
+		} else {
+			cost[j] = abs(a - b);
+		}
 
 		c.agree[j] = exp(-abs(a - b) * 20.0);
 		// Mostly the newer frame even where they agree: a 50/50 mix smooths out
@@ -527,8 +562,8 @@ static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, textur
 		// says "no match" and the object (a pole leaving the screen) breaks
 		// up into smeared border pixels. Use the frame that still has it, at
 		// a fixed middling cost since there's nothing to check it against.
-		bool outA = any(pa < -0.5) || any(pa > p.lumaSize + 0.5);
-		bool outB = any(pb < -0.5) || any(pb > p.lumaSize + 0.5);
+		bool outA = fg_offscreen(pa, p);
+		bool outB = fg_offscreen(pb, p);
 		c.only[j] = 0;
 		if (outA != outB) {
 			c.only[j] = outB ? 1.0 : -1.0;
@@ -546,65 +581,172 @@ static FGCandidates fg_candidates(texture2d<float, access::sample> prevY, textur
 }
 
 
-kernel void fg_synth_luma(texture2d<float, access::sample> prevY [[texture(0)]],
-                          texture2d<float, access::sample> currY [[texture(1)]],
-                          texture2d<float, access::sample> flow [[texture(2)]],
-                          texture2d<float, access::write> outY [[texture(3)]],
-                          texture2d<float, access::read> global [[texture(4)]],
-                          constant FGParams &p [[buffer(0)]],
-                          uint2 gid [[thread_position_in_grid]]) {
-	if (gid.x >= outY.get_width() || gid.y >= outY.get_height()) return;
-	float2 pos = float2(gid) + 0.5;
-	// Cut or fade (see fg_global): a plain half-and-half mix in place, which
-	// is what a fade's halfway point is anyway
-	float trust = global.read(uint2(0)).w;
+// Cut or fade (see fg_global): a plain half-and-half mix in place, which is
+// what a fade's halfway point is anyway. `trust` (0...1) is how much of the
+// motion-compensated result to use instead.
+static float fg_fade_luma(texture2d<float, access::sample> prevY, texture2d<float, access::sample> currY,
+                          float2 pos, float generated, float trust, constant FGParams &p) {
+	if (trust >= 1) return generated;
 	float2 inv = 1.0 / p.lumaSize;
 	float fade = 0.5 * (prevY.sample(fgLinear, pos * inv).r + currY.sample(fgLinear, pos * inv).r);
-	if (trust <= 0) {
-		outY.write(float4(fade), gid);
-		return;
-	}
-	FGCandidates c = fg_candidates(prevY, currY, flow, pos, p);
-	float sum = 0, held = 0, wsum = 0;
-	for (int j = 0; j < FG_CANDIDATES; j++) {
-		sum += c.w[j] * c.y[j];
-		held += c.w[j] * c.cur[j];
-		wsum += c.w[j];
-	}
-	outY.write(float4(mix(fade, mix(held, sum, c.confidence) / wsum, trust)), gid);
+	return mix(fade, generated, trust);
 }
 
-kernel void fg_synth_chroma(texture2d<float, access::sample> prevY [[texture(0)]],
-                            texture2d<float, access::sample> currY [[texture(1)]],
-                            texture2d<float, access::sample> prevC [[texture(2)]],
-                            texture2d<float, access::sample> currC [[texture(3)]],
-                            texture2d<float, access::sample> flow [[texture(4)]],
-                            texture2d<float, access::write> outC [[texture(5)]],
-                            texture2d<float, access::read> global [[texture(6)]],
-                            constant FGParams &p [[buffer(0)]],
-                            uint2 gid [[thread_position_in_grid]]) {
+// Luma and chroma in one pass (4:2:0 only), one thread per chroma pixel. The
+// 2x2 luma pixels under it are made first, and the chroma reuses their
+// candidate motion and weights instead of judging the candidates again.
+kernel void fg_synth(texture2d<float, access::sample> prevY [[texture(0)]],
+                     texture2d<float, access::sample> currY [[texture(1)]],
+                     texture2d<float, access::sample> prevC [[texture(2)]],
+                     texture2d<float, access::sample> currC [[texture(3)]],
+                     texture2d<float, access::sample> flow [[texture(4)]],
+                     texture2d<float, access::write> outY [[texture(5)]],
+                     texture2d<float, access::write> outC [[texture(6)]],
+                     texture2d<float, access::read> global [[texture(7)]],
+                     constant FGParams &p [[buffer(0)]],
+                     uint2 gid [[thread_position_in_grid]]) {
 	if (gid.x >= outC.get_width() || gid.y >= outC.get_height()) return;
+	uint2 base = gid * 2;
+	uint2 lumaMax = uint2(outY.get_width(), outY.get_height());
 	float2 posC = float2(gid) + 0.5;
 	float2 scale = p.lumaSize / p.chromaSize;
-	float2 inv = 1.0 / p.chromaSize;
+	float2 invC = 1.0 / p.chromaSize;
 	float trust = global.read(uint2(0)).w;
-	float2 fade = 0.5 * (prevC.sample(fgLinear, posC * inv).rg + currC.sample(fgLinear, posC * inv).rg);
+	float2 fadeC = 0.5 * (prevC.sample(fgLinear, posC * invC).rg + currC.sample(fgLinear, posC * invC).rg);
 	if (trust <= 0) {
-		outC.write(float4(fade, 0, 0), gid);
+		float2 inv = 1.0 / p.lumaSize;
+		for (int k = 0; k < 4; k++) {
+			uint2 lp = base + uint2(k & 1, k >> 1);
+			if (any(lp >= lumaMax)) continue;
+			float2 pos = float2(lp) + 0.5;
+			outY.write(float4(0.5 * (prevY.sample(fgLinear, pos * inv).r + currY.sample(fgLinear, pos * inv).r)), lp);
+		}
+		outC.write(float4(fadeC, 0, 0), gid);
 		return;
 	}
-	FGCandidates c = fg_candidates(prevY, currY, flow, posC * scale, p);
+
+	// Per candidate, for the chroma: motion (luma px), weight (normalised per
+	// luma pixel and summed), agreement (weighted the same way) and which
+	// frame alone has it at the screen edge (see fg_candidates)
+	float2 d[FG_CANDIDATES];
+	float w[FG_CANDIDATES], agree[FG_CANDIDATES], only[FG_CANDIDATES];
+	float confidence = 0;
+
+	if (fgSynthLevel < 2) {
+		for (int j = 0; j < FG_CANDIDATES; j++) {
+			d[j] = 0;
+			w[j] = 0;
+			agree[j] = 0;
+		}
+		float n = 0;
+		for (int k = 0; k < 4; k++) {
+			uint2 lp = base + uint2(k & 1, k >> 1);
+			if (any(lp >= lumaMax)) continue;
+			float2 pos = float2(lp) + 0.5;
+			FGCandidates c = fg_candidates(prevY, currY, flow, pos, p, fgSynthLevel == 0);
+			float sum = 0, held = 0, wsum = 0;
+			for (int j = 0; j < FG_CANDIDATES; j++) {
+				sum += c.w[j] * c.y[j];
+				held += c.w[j] * c.cur[j];
+				wsum += c.w[j];
+			}
+			outY.write(float4(fg_fade_luma(prevY, currY, pos, mix(held, sum, c.confidence) / wsum, trust, p)), lp);
+			for (int j = 0; j < FG_CANDIDATES; j++) {
+				d[j] += c.d[j];
+				w[j] += c.w[j] / wsum;
+				agree[j] += c.agree[j] * c.w[j] / wsum;
+			}
+			confidence += c.confidence;
+			n += 1;
+		}
+		float2 posL = posC * scale;
+		for (int j = 0; j < FG_CANDIDATES; j++) {
+			d[j] /= n;
+			agree[j] /= w[j];
+			bool outA = fg_offscreen(posL - d[j], p), outB = fg_offscreen(posL + d[j], p);
+			only[j] = outA == outB ? 0.0 : (outB ? 1.0 : -1.0);
+		}
+		confidence /= n;
+	} else {
+		// One choice for the 2x2 block, judged on its four pixels: the
+		// samples that make the picture are the ones compared
+		float2 inv = 1.0 / p.lumaSize;
+		float2 posQ = float2(base) + 1.0;
+		const float2 offsets[4] = { float2(FG_EDGE_REACH, 0), float2(-FG_EDGE_REACH, 0),
+		                            float2(0, FG_EDGE_REACH), float2(0, -FG_EDGE_REACH) };
+		float cost[FG_CANDIDATES];
+		float a[FG_CANDIDATES * 4], b[FG_CANDIDATES * 4];
+		float minCost = INFINITY;
+		for (int j = 0; j < FG_CANDIDATES; j++) {
+			if (j == 0) {
+				d[j] = flow.sample(fgLinear, posQ * inv).xy;
+				w[j] = 1.0;
+			} else if (j < 5) {
+				d[j] = flow.sample(fgLinear, (posQ + offsets[j - 1]) * inv).xy;
+				w[j] = 0.15;
+			} else {
+				d[j] = float2(0);
+				w[j] = 0.3;
+			}
+			float sad = 0;
+			for (int k = 0; k < 4; k++) {
+				float2 pos = float2(base + uint2(k & 1, k >> 1)) + 0.5;
+				float av = prevY.sample(fgLinear, (pos - d[j]) * inv).r;
+				float bv = currY.sample(fgLinear, (pos + d[j]) * inv).r;
+				a[j * 4 + k] = av;
+				b[j * 4 + k] = bv;
+				sad += abs(av - bv);
+			}
+			cost[j] = sad * 0.25;
+			bool outA = fg_offscreen(posQ - d[j], p), outB = fg_offscreen(posQ + d[j], p);
+			only[j] = 0;
+			if (outA != outB) {
+				only[j] = outB ? 1.0 : -1.0;
+				for (int k = 0; k < 4; k++) {
+					if (outB) b[j * 4 + k] = a[j * 4 + k];
+					else a[j * 4 + k] = b[j * 4 + k];
+				}
+				cost[j] = FG_EDGE_COST;
+			}
+			minCost = min(minCost, cost[j]);
+		}
+		float wsum = 0;
+		for (int j = 0; j < FG_CANDIDATES; j++) {
+			w[j] = w[j] * exp(-(cost[j] - minCost) * 60.0) + 1e-6;
+			wsum += w[j];
+			agree[j] = 0;
+		}
+		confidence = 1.0 - smoothstep(0.03, 0.09, minCost);
+		for (int k = 0; k < 4; k++) {
+			float sum = 0, held = 0;
+			for (int j = 0; j < FG_CANDIDATES; j++) {
+				float av = a[j * 4 + k], bv = b[j * 4 + k];
+				float ag = exp(-abs(av - bv) * 20.0);
+				agree[j] += ag * 0.25;
+				sum += w[j] * mix(bv, mix(av, bv, FG_NEWER_WEIGHT), ag);
+				held += w[j] * bv;
+			}
+			uint2 lp = base + uint2(k & 1, k >> 1);
+			if (any(lp >= lumaMax)) continue;
+			float2 pos = float2(lp) + 0.5;
+			outY.write(float4(fg_fade_luma(prevY, currY, pos, mix(held, sum, confidence) / wsum, trust, p)), lp);
+		}
+	}
+
 	float2 sum = 0, held = 0;
 	float wsum = 0;
 	for (int j = 0; j < FG_CANDIDATES; j++) {
-		float2 dc = c.d[j] / scale;
-		float2 a = prevC.sample(fgLinear, (posC - dc) * inv).rg;
-		float2 b = currC.sample(fgLinear, (posC + dc) * inv).rg;
-		if (c.only[j] > 0) b = a;
-		else if (c.only[j] < 0) a = b;
-		sum += c.w[j] * mix(b, mix(a, b, FG_NEWER_WEIGHT), c.agree[j]);
-		held += c.w[j] * b;
-		wsum += c.w[j];
+		float2 dc = d[j] / scale;
+		float2 a = prevC.sample(fgLinear, (posC - dc) * invC).rg;
+		float2 b = currC.sample(fgLinear, (posC + dc) * invC).rg;
+		float ag = agree[j];
+		if (only[j] > 0) b = a;
+		else if (only[j] < 0) a = b;
+		if (only[j] != 0) ag = 0;
+		sum += w[j] * mix(b, mix(a, b, FG_NEWER_WEIGHT), ag);
+		held += w[j] * b;
+		wsum += w[j];
 	}
-	outC.write(float4(mix(fade, mix(held, sum, c.confidence) / wsum, trust), 0, 0), gid);
+	float2 chroma = mix(held, sum, confidence) / wsum;
+	outC.write(float4(trust >= 1 ? chroma : mix(fadeC, chroma, trust), 0, 0), gid);
 }
