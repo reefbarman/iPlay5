@@ -54,6 +54,9 @@ targets:
         # Game controllers can drive the UI and Game Mode kicks in while streaming
         GCSupportsControllerUserInteraction: true
         GCSupportsGameMode: true
+        # Debug frame captures show up in Files and Finder
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
           - ProfileName: DualSense

@@ -19,6 +19,16 @@ struct StreamStats: Equatable {
 	var controller: String?
 	/// The screen's refresh rate, 0 if unknown
 	var displayHz: Double = 0
+	/// Frame generation is running (on, and the screen is fast enough)
+	var frameGenActive = false
+	/// In-between frames made and skipped in the last second, and GPU ms per frame
+	var generatedFPS = 0
+	var skippedFrames = 0
+	/// Repeated stream frames dropped in the last second (a 30 fps game in a 60 fps stream)
+	var repeatedFrames = 0
+	var generateMs: Double = 0
+	/// Extra frame generation detail, e.g. FlyHigh's network size or a fallback
+	var frameGenStatus: String?
 }
 
 /// One Remote Play connection: chiaki session + decoder + renderer + audio + input.
@@ -42,6 +52,8 @@ final class StreamSession {
 	private(set) var keyboardText: String?
 	/// Folded or backgrounded: video isn't drawn and audio is muted, connection stays up
 	private(set) var paused = false
+	/// Debug frame capture: saving, saved or failed (shown by the capture button)
+	private(set) var captureStatus: String?
 
 	let console: Console
 	private(set) var settings: StreamSettings
@@ -54,6 +66,9 @@ final class StreamSession {
 	@ObservationIgnored private var selfRef: Unmanaged<StreamSession>?
 	@ObservationIgnored private var statsTimer: Timer?
 	@ObservationIgnored private var lastDecoded = 0
+	@ObservationIgnored private var lastGenerated = 0
+	@ObservationIgnored private var lastSkipped = 0
+	@ObservationIgnored private var lastRepeated = 0
 	@ObservationIgnored private var lostFrames: Int32 = 0
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
@@ -89,8 +104,11 @@ final class StreamSession {
 		let decoder = VideoDecoder(hevc: codec == .h265, tenBit: settings.hdr)
 		decoder.onFrame = { [weak renderer] frame in renderer?.display(frame) }
 		self.decoder = decoder
-		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling)
+		configureRenderer()
 		renderer.setPaused(paused)
+		lastGenerated = renderer.generatedFrames
+		lastSkipped = renderer.skippedFrames
+		lastRepeated = renderer.repeatedFrames
 
 		var config = CKSessionConfig()
 		let size = settings.resolution.size
@@ -226,7 +244,38 @@ final class StreamSession {
 			teardown()
 			start()
 		} else {
-			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, bicubic: new.sharpUpscaling)
+			configureRenderer()
+		}
+	}
+
+	/// Frame generation needs a screen that can show twice the stream's frame rate
+	private var frameGenerationActive: Bool {
+		let screenHz = settings.highRefreshDisplay ? UIScreen.main.maximumFramesPerSecond : 60
+		return settings.frameGeneration && settings.fps * 2 <= screenHz
+	}
+
+	private func configureRenderer() {
+		renderer?.configure(
+			hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling,
+			frameGen: frameGenerationActive ? settings.frameGenMode : .off, fps: settings.fps,
+			frameCapture: settings.frameCapture)
+	}
+
+	/// Debug: saves the last few seconds of frames (see FrameCapture)
+	func saveFrameCapture() {
+		guard let renderer, captureStatus != "Saving…" else { return }
+		captureStatus = "Saving…"
+		renderer.saveCapture { [weak self] result in
+			guard let self else { return }
+			switch result {
+			case .success(let (dir, count)):
+				captureStatus = "Saved \(count) frames: Files › iPlay5 › Frame captures › \(dir.lastPathComponent)"
+			case .failure(let error):
+				captureStatus = "Capture failed: \(error.localizedDescription)"
+			}
+			DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+				if self?.captureStatus != "Saving…" { self?.captureStatus = nil }
+			}
 		}
 	}
 
@@ -292,7 +341,10 @@ final class StreamSession {
 	// MARK: - Callbacks (chiaki threads)
 
 	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32) -> Bool {
-		if lost > 0 { lostFrames &+= lost }
+		if lost > 0 {
+			lostFrames &+= lost
+			renderer?.noteLostFrames()
+		}
 		guard let decoder else { return true }
 		return decoder.decode(buf, count: size)
 	}
@@ -424,6 +476,17 @@ final class StreamSession {
 		s.hdrFrames = settings.hdr
 		s.controller = input.controllerName
 		s.displayHz = renderer?.displayHz ?? 0
+		if let renderer {
+			s.frameGenActive = frameGenerationActive
+			s.generatedFPS = renderer.generatedFrames - lastGenerated
+			s.skippedFrames = renderer.skippedFrames - lastSkipped
+			s.repeatedFrames = renderer.repeatedFrames - lastRepeated
+			s.generateMs = renderer.generateMs
+			s.frameGenStatus = renderer.frameGenStatus
+			lastGenerated = renderer.generatedFrames
+			lastSkipped = renderer.skippedFrames
+			lastRepeated = renderer.repeatedFrames
+		}
 		stats = s
 	}
 }

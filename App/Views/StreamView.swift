@@ -23,6 +23,8 @@ struct StreamView: View {
 	@State private var showSettingsHint = false
 	@State private var showPSButton = false
 	@State private var hidePSButton: Task<Void, Never>?
+	@State private var showFGButton = false
+	@State private var hideFGButton: Task<Void, Never>?
 	@State private var pin = ""
 	@State private var phone = PhoneStatus()
 	@State private var showHeatWarning = false
@@ -62,6 +64,7 @@ struct StreamView: View {
 			guard streaming, !hintShown else { return }
 			hintShown = true
 			flashSettingsHint()
+			revealFGButton()
 		}
 		.onChange(of: phone.isHot) { _, hot in
 			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
@@ -105,6 +108,13 @@ struct StreamView: View {
 			if showPSButton {
 				psButton
 					.transition(.opacity)
+			}
+
+			if let session, session.state == .streaming, !folded, !portrait {
+				frameGenButton(session)
+				if session.settings.frameCapture {
+					captureButton(session)
+				}
 			}
 
 			if showHeatWarning {
@@ -260,6 +270,88 @@ struct StreamView: View {
 		.padding(.horizontal, 20)
 		.ignoresSafeArea()
 		.allowsHitTesting(false)
+	}
+
+	// MARK: - Frame generation toggle (bottom right)
+
+	/// Shows the frame generation label, then fades it out like the other corners
+	private func revealFGButton() {
+		withAnimation(.easeOut(duration: 0.2)) { showFGButton = true }
+		hideFGButton?.cancel()
+		hideFGButton = Task { @MainActor in
+			try? await Task.sleep(for: .seconds(3))
+			guard !Task.isCancelled else { return }
+			withAnimation(.easeIn(duration: 0.6)) { showFGButton = false }
+		}
+	}
+
+	/// Cycles Off -> Custom -> FlyHigh. The whole bottom-right corner is the
+	/// button, so a slightly-off tap doesn't land on the touchpad. The label
+	/// fades out after a few seconds but the corner stays tappable: a tap
+	/// while it's hidden just brings it back, the next one changes the mode.
+	private func frameGenButton(_ session: StreamSession) -> some View {
+		let mode = settingsStore.settings.frameGenMode
+		let (text, colour): (String, Color) =
+			switch mode {
+			case .off: ("FG off", .black.opacity(0.45))
+			case .custom: ("FG", .green.opacity(0.85))
+			case .flyHigh: ("FG AI", .purple.opacity(0.85))
+			}
+		return Button {
+			if showFGButton {
+				settingsStore.settings.frameGenMode = mode.next
+				session.apply(settingsStore.settings)
+			}
+			revealFGButton()
+		} label: {
+			Text(text)
+				.font(.caption.weight(.bold))
+				.foregroundStyle(.white)
+				.padding(.horizontal, 10)
+				.frame(minWidth: 52, minHeight: 30)
+				.background(colour, in: Capsule())
+				.opacity(showFGButton ? 1 : 0)
+				.padding(.bottom, 12)
+				.padding(.trailing, 16)
+				.frame(width: 130, height: 90, alignment: .bottomTrailing)
+				.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel("Frame generation: \(mode.label). Tap to change.")
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+		.ignoresSafeArea()
+	}
+
+	// MARK: - Frame capture (debug, bottom left)
+
+	/// Saves the last few seconds of frames, real and generated, for a closer look
+	private func captureButton(_ session: StreamSession) -> some View {
+		Button {
+			session.saveFrameCapture()
+		} label: {
+			HStack(spacing: 8) {
+				Image(systemName: "record.circle")
+					.font(.title3)
+					.foregroundStyle(.red)
+				if let status = session.captureStatus {
+					Text(status)
+						.font(.caption.weight(.semibold))
+						.foregroundStyle(.white)
+						.lineLimit(2)
+				}
+			}
+			.padding(.horizontal, 10)
+			.padding(.vertical, 6)
+			.background(.black.opacity(0.45), in: Capsule())
+			.opacity(session.captureStatus == nil ? 0.6 : 1)
+			.padding(.bottom, 12)
+			.padding(.leading, 16)
+			.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel("Save the last few seconds of frames")
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+		.ignoresSafeArea()
 	}
 
 	// MARK: - Heat warning
@@ -499,6 +591,14 @@ private struct StatsOverlay: View {
 			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
 			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
+			if settings.frameGeneration {
+				if stats.frameGenActive {
+					Text(String(format: "%@ +%d fps  %.1f ms  skip %d  repeats %d", settings.frameGenMode == .flyHigh ? "flyhigh" : "frame gen", stats.generatedFPS, stats.generateMs, stats.skippedFrames, stats.repeatedFrames))
+					if let status = stats.frameGenStatus { Text(status) }
+				} else {
+					Text("frame gen off: screen too slow")
+				}
+			}
 			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
 			if let controller = stats.controller { Text(controller) }
 		}

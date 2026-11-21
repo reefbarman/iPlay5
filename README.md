@@ -88,5 +88,6 @@ To build the same unsigned IPA the releases use, run `scripts/package-ipa.sh`, w
 
 - [chiaki-ng](https://github.com/streetpea/chiaki-ng) and the original [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki) did the hard work of the Remote Play protocol. PSN sign-in follows chiaki-ng's flow.
 - Also bundled: [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0), [Opus](https://opus-codec.org) (BSD), and nanopb and jerasure through chiaki-ng.
+- The "FlyHigh" frame generation option runs the FlyHighFG model from [Framegen](https://github.com/MONZikWasTaken/Framegen) by MONZikWasTaken, through a Metal port of the [FlyHigh engine](https://github.com/getflyhigh/flyhigh-engine)'s kernels (Apache-2.0). The model weights in `App/Resources/FlyHigh/` are licensed [CC BY-NC 4.0](App/Resources/FlyHigh/FLYHIGHFG_WEIGHTS_LICENSE.md): fine for this free, open-source app, but any commercial or monetised build needs a separate license from the authors.
 
 iPlay5 is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only), the same as chiaki-ng. If you distribute a modified build, you must make its source available under the same license.
