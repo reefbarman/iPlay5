@@ -19,6 +19,14 @@ struct StreamStats: Equatable {
 	var controller: String?
 	/// The screen's refresh rate, 0 if unknown
 	var displayHz: Double = 0
+	/// Frame generation is running (on, and the screen is fast enough)
+	var frameGenActive = false
+	/// In-between frames made and skipped in the last second, and GPU ms per frame
+	var generatedFPS = 0
+	var skippedFrames = 0
+	var generateMs: Double = 0
+	/// Extra frame generation detail, e.g. FlyHigh's network size or a fallback
+	var frameGenStatus: String?
 }
 
 /// One Remote Play connection: chiaki session + decoder + renderer + audio + input.
@@ -54,6 +62,8 @@ final class StreamSession {
 	@ObservationIgnored private var selfRef: Unmanaged<StreamSession>?
 	@ObservationIgnored private var statsTimer: Timer?
 	@ObservationIgnored private var lastDecoded = 0
+	@ObservationIgnored private var lastGenerated = 0
+	@ObservationIgnored private var lastSkipped = 0
 	@ObservationIgnored private var lostFrames: Int32 = 0
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
 	/// Latest controller state, so screen taps can add a touchpad click on top of it
@@ -89,8 +99,10 @@ final class StreamSession {
 		let decoder = VideoDecoder(hevc: codec == .h265, tenBit: settings.hdr)
 		decoder.onFrame = { [weak renderer] frame in renderer?.display(frame) }
 		self.decoder = decoder
-		renderer.configure(hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling)
+		configureRenderer()
 		renderer.setPaused(paused)
+		lastGenerated = renderer.generatedFrames
+		lastSkipped = renderer.skippedFrames
 
 		var config = CKSessionConfig()
 		let size = settings.resolution.size
@@ -226,8 +238,20 @@ final class StreamSession {
 			teardown()
 			start()
 		} else {
-			renderer?.configure(hdr: new.hdr, displayMode: new.displayMode, bicubic: new.sharpUpscaling)
+			configureRenderer()
 		}
+	}
+
+	/// Frame generation needs a screen that can show twice the stream's frame rate
+	private var frameGenerationActive: Bool {
+		let screenHz = settings.highRefreshDisplay ? UIScreen.main.maximumFramesPerSecond : 60
+		return settings.frameGeneration && settings.fps * 2 <= screenHz
+	}
+
+	private func configureRenderer() {
+		renderer?.configure(
+			hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling,
+			frameGen: frameGenerationActive ? settings.frameGenMode : .off, fps: settings.fps)
 	}
 
 	func setPaused(_ paused: Bool) {
@@ -424,6 +448,15 @@ final class StreamSession {
 		s.hdrFrames = settings.hdr
 		s.controller = input.controllerName
 		s.displayHz = renderer?.displayHz ?? 0
+		if let renderer {
+			s.frameGenActive = frameGenerationActive
+			s.generatedFPS = renderer.generatedFrames - lastGenerated
+			s.skippedFrames = renderer.skippedFrames - lastSkipped
+			s.generateMs = renderer.generateMs
+			s.frameGenStatus = renderer.frameGenStatus
+			lastGenerated = renderer.generatedFrames
+			lastSkipped = renderer.skippedFrames
+		}
 		stats = s
 	}
 }

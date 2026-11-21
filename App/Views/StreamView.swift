@@ -107,6 +107,10 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
+			if let session, session.state == .streaming, !folded, !portrait {
+				frameGenButton(session)
+			}
+
 			if showHeatWarning {
 				heatWarning
 					.transition(.opacity)
@@ -260,6 +264,39 @@ struct StreamView: View {
 		.padding(.horizontal, 20)
 		.ignoresSafeArea()
 		.allowsHitTesting(false)
+	}
+
+	// MARK: - Frame generation toggle (bottom right)
+
+	/// Cycles Off -> Custom -> FlyHigh. The whole bottom-right corner is the
+	/// button, so a slightly-off tap doesn't land on the touchpad.
+	private func frameGenButton(_ session: StreamSession) -> some View {
+		let mode = settingsStore.settings.frameGenMode
+		let (text, colour): (String, Color) =
+			switch mode {
+			case .off: ("FG off", .black.opacity(0.45))
+			case .custom: ("FG", .green.opacity(0.85))
+			case .flyHigh: ("FG AI", .purple.opacity(0.85))
+			}
+		return Button {
+			settingsStore.settings.frameGenMode = mode.next
+			session.apply(settingsStore.settings)
+		} label: {
+			Text(text)
+				.font(.caption.weight(.bold))
+				.foregroundStyle(.white)
+				.padding(.horizontal, 10)
+				.frame(minWidth: 52, minHeight: 30)
+				.background(colour, in: Capsule())
+				.padding(.bottom, 12)
+				.padding(.trailing, 16)
+				.frame(width: 130, height: 90, alignment: .bottomTrailing)
+				.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel("Frame generation: \(mode.label). Tap to change.")
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+		.ignoresSafeArea()
 	}
 
 	// MARK: - Heat warning
@@ -499,6 +536,14 @@ private struct StatsOverlay: View {
 			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
 			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
+			if settings.frameGeneration {
+				if stats.frameGenActive {
+					Text(String(format: "%@ +%d fps  %.1f ms  skip %d", settings.frameGenMode == .flyHigh ? "flyhigh" : "frame gen", stats.generatedFPS, stats.generateMs, stats.skippedFrames))
+					if let status = stats.frameGenStatus { Text(status) }
+				} else {
+					Text("frame gen off: screen too slow")
+				}
+			}
 			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
 			if let controller = stats.controller { Text(controller) }
 		}
