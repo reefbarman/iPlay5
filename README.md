@@ -4,6 +4,8 @@
 
 PS5 Remote Play for iPhone over your local network, built on [chiaki-ng](https://github.com/streetpea/chiaki-ng)'s core. Tuned for the iPhone Duo's near-square inner screen, and works on any iPhone running iOS 17 or later.
 
+<p align="center"><img src="docs/images/iphone-duo-hero.webp" width="800" alt="A PS5 game streaming to iPlay5 on the iPhone Duo with virtual controls visible"></p>
+
 > [!IMPORTANT]
 > **Play with a physical controller or virtual controls.** Auto keeps the virtual controls out of the way when you have a supported controller connected, such as a DualSense, Xbox controller, or Backbone. Change this in Settings › Controller.
 >
