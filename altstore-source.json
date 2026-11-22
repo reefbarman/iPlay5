@@ -12,7 +12,7 @@
       "bundleIdentifier": "io.github.reefbarman.iplay5",
       "developerName": "reefbarman",
       "subtitle": "PS5 Remote Play over your local network",
-      "localizedDescription": "Requires a game controller (DualSense, Xbox, Backbone, GameSir, etc.): there is no on-screen virtual controller.\n\nStream your PS5 to your iPhone over Wi-Fi. Hardware HEVC/H.264 decoding with Metal, HDR, up to 1080p60, game controller support with phone gyro, touchscreen as the DualSense touchpad, automatic console discovery and PSN sign-in for linking. Tuned for the iPhone Duo's inner screen, and works on any iPhone running iOS 17 or later.",
+      "localizedDescription": "Play with on-screen virtual controls or a supported controller such as a DualSense, Xbox, Backbone, or GameSir. By default, virtual controls stay out of the way while a controller is connected.\n\nStream your PS5 to your iPhone over Wi-Fi. Hardware HEVC/H.264 decoding with Metal, HDR, up to 1080p60, game controller support with phone gyro, touchscreen as the DualSense touchpad, automatic console discovery and PSN sign-in for linking. Tuned for the iPhone Duo's inner screen, and works on any iPhone running iOS 17 or later.",
       "iconURL": "https://raw.githubusercontent.com/reefbarman/iPlay5/main/App/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
       "tintColor": "#2A62E8",
       "category": "entertainment",
