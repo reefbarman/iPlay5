@@ -1,0 +1,74 @@
+--- a/src/takion.c	2026-11-22 18:53:43
++++ b/src/takion.c	2026-11-22 18:54:52
+@@ -39,16 +39,23 @@
+ // VERY similar to SCTP, see RFC 4960
+ 
+ #define TAKION_A_RWND 0x19000
++// iPlay5: local socket receive buffer. TAKION_A_RWND (~100 KB) is only ~4 ms at 200 Mbps,
++// so ask the kernel for more; the window advertised to the console stays TAKION_A_RWND.
++// Halved on failure (the kernel rejects sizes above kern.ipc.maxsockbuf).
++#define TAKION_SO_RCVBUF_SIZE (4 * 1024 * 1024)
+ #define TAKION_OUTBOUND_STREAMS 0x64
+ #define TAKION_INBOUND_STREAMS 0x64
+ 
+ #define TAKION_REORDER_QUEUE_SIZE_EXP 4 // => 16 entries
+-#define TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP 6 // => 64 entries
++// iPlay5: was 6 (64 entries). The queue drops received packets from its head when it
++// overflows, and at 200 Mbps (~18k packets/s) 64 entries fill in ~4 ms, well before
++// the reorder timeout. 2048 entries cover ~115 ms at 200 Mbps.
++#define TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP 11 // => 2048 entries
+ #define TAKION_AV_REORDER_TIMEOUT_US 16000 // ~1 frame at 60fps
+ 
+ // iPlay5 adaptive reorder wait (adaptive_av_reorder)
+-// Room for the longer wait at high bitrates (64 entries is ~20 ms of 1080p at 30 Mbps)
+-#define TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP_ADAPTIVE 8 // => 256 entries
++// Room for the longer wait at high bitrates (see TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP)
++#define TAKION_AV_VIDEO_REORDER_QUEUE_SIZE_EXP_ADAPTIVE 11 // => 2048 entries
+ #define TAKION_AV_REORDER_TIMEOUT_MAX_US 40000
+ // Wait this much longer than the late packet needed
+ #define TAKION_AV_REORDER_LATE_MARGIN_US 4000
+@@ -200,6 +207,24 @@
+ static void takion_handle_packet_av(ChiakiTakion *takion, uint8_t base_type, uint8_t *buf, size_t buf_size);
+ static ChiakiErrorCode takion_read_extra_sock_messages(ChiakiTakion *takion);
+ 
++/**
++ * iPlay5: set SO_RCVBUF as large as the kernel allows, from TAKION_SO_RCVBUF_SIZE down,
++ * falling back to the original a_rwnd size. Returns setsockopt's result.
++ */
++static int takion_set_rcvbuf(ChiakiTakion *takion)
++{
++	for(int size = TAKION_SO_RCVBUF_SIZE; size > (int)takion->a_rwnd; size /= 2)
++	{
++		if(setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF, (const CHIAKI_SOCKET_BUF_TYPE)&size, sizeof(size)) == 0)
++		{
++			CHIAKI_LOGI(takion->log, "Takion receive buffer set to %d bytes", size);
++			return 0;
++		}
++	}
++	const int rcvbuf_val = takion->a_rwnd;
++	return setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF, (const CHIAKI_SOCKET_BUF_TYPE)&rcvbuf_val, sizeof(rcvbuf_val));
++}
++
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_connect(ChiakiTakion *takion, ChiakiTakionConnectInfo *info, chiaki_socket_t *sock)
+ {
+ 	ChiakiErrorCode ret = CHIAKI_ERR_SUCCESS;
+@@ -289,8 +314,7 @@
+ 			CHIAKI_LOGE(takion->log, "Takion had problem reading extra messages from socket using PSN Connection with error: " CHIAKI_SOCKET_ERROR_FMT, CHIAKI_SOCKET_ERROR_VALUE);
+ 			goto error_sock;
+ 		}
+-		const int rcvbuf_val = takion->a_rwnd;
+-		int r = setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF, (const CHIAKI_SOCKET_BUF_TYPE)&rcvbuf_val, sizeof(rcvbuf_val));
++		int r = takion_set_rcvbuf(takion);
+ 		if(r < 0)
+ 		{
+ 			CHIAKI_LOGE(takion->log, "Takion failed to setsockopt SO_RCVBUF: " CHIAKI_SOCKET_ERROR_FMT, CHIAKI_SOCKET_ERROR_VALUE);
+@@ -377,8 +401,7 @@
+ 			ret = CHIAKI_ERR_NETWORK;
+ 			goto error_pipe;
+ 		}
+-		const int rcvbuf_val = takion->a_rwnd;
+-		int r = setsockopt(takion->sock, SOL_SOCKET, SO_RCVBUF, (const CHIAKI_SOCKET_BUF_TYPE)&rcvbuf_val, sizeof(rcvbuf_val));
++		int r = takion_set_rcvbuf(takion);
+ 		if(r < 0)
+ 		{
+ 			CHIAKI_LOGE(takion->log, "Takion failed to setsockopt SO_RCVBUF: " CHIAKI_SOCKET_ERROR_FMT, CHIAKI_SOCKET_ERROR_VALUE);
