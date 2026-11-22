@@ -334,7 +334,7 @@ final class MetalRenderer {
 					}
 					let seq = capture?.reserve(.generated, pair: realFrames)
 					if let seq { capturedGenerated = (seq, outLuma, outChroma) }
-					track(drawable, captureSeq: seq, capture: capture)
+					track(drawable, in: commandBuffer, captureSeq: seq, capture: capture)
 					commandBuffer.present(drawable)
 					commandBuffer.commit()
 					generatedFrames += 1
@@ -371,13 +371,18 @@ final class MetalRenderer {
 			return
 		}
 		draw(luma: lumaTex, chroma: chromaTex, uniforms: &uniforms, to: drawable, in: commandBuffer)
-		track(drawable, captureSeq: realSeq, capture: capture)
+		track(drawable, in: commandBuffer, captureSeq: realSeq, capture: capture)
+		#if targetEnvironment(simulator)
+		// The simulator has no paced presentation, so the real frame just follows the generated one
+		commandBuffer.present(drawable)
+		#else
 		if generated {
 			// Slightly under half, so a late frame doesn't push every following one later
 			commandBuffer.present(drawable, afterMinimumDuration: gap * 0.45)
 		} else {
 			commandBuffer.present(drawable)
 		}
+		#endif
 		commandBuffer.commit()
 		presentedFrames += 1
 	}
@@ -448,14 +453,29 @@ final class MetalRenderer {
 		encoder.endEncoding()
 	}
 
-	/// Counts the drawable as in flight until it reaches the screen (or is dropped)
-	private func track(_ drawable: CAMetalDrawable, captureSeq: Int? = nil, capture: FrameCapture? = nil) {
+	/// Counts the drawable as in flight until it reaches the screen (or is dropped).
+	/// Call before committing `commandBuffer`.
+	private func track(
+		_ drawable: CAMetalDrawable, in commandBuffer: MTLCommandBuffer, captureSeq: Int? = nil,
+		capture: FrameCapture? = nil
+	) {
 		lock.withLock { inFlight += 1 }
+		#if targetEnvironment(simulator)
+		// No presented handlers on the simulator: treat the GPU finishing as the frame being shown
+		_ = drawable
+		commandBuffer.addCompletedHandler { [weak self] _ in
+			if let captureSeq, let capture { capture.presented(seq: captureSeq, at: CACurrentMediaTime()) }
+			guard let self else { return }
+			self.lock.withLock { self.inFlight -= 1 }
+		}
+		#else
+		_ = commandBuffer
 		drawable.addPresentedHandler { [weak self] shown in
 			if let captureSeq, let capture { capture.presented(seq: captureSeq, at: shown.presentedTime) }
 			guard let self else { return }
 			self.lock.withLock { self.inFlight -= 1 }
 		}
+		#endif
 	}
 
 	private func makeTexture(_ pb: CVPixelBuffer, plane: Int, format: MTLPixelFormat, cache: CVMetalTextureCache) -> CVMetalTexture? {

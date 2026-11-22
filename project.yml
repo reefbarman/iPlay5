@@ -6,6 +6,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    # ChiakiKit's simulator slice is arm64 only (Apple silicon Macs)
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
     # Release builds override these from the git tag (scripts/package-ipa.sh)
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
