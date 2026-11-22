@@ -15,6 +15,26 @@ struct Console: Codable, Identifiable, Hashable {
 	/// This console's own video and network settings, nil to use the shared ones
 	/// (e.g. one PS5 on Ethernet, another on Wi-Fi)
 	var customSettings: ConnectionSettings?
+	/// Public IP or hostname to use when the console isn't answering on the
+	/// local network, e.g. a router with the Remote Play ports forwarded.
+	/// Discovery never touches this, unlike `host`.
+	var remoteHost: String?
+}
+
+extension Console {
+	/// The remote address without stray whitespace, nil when unset
+	var remoteAddress: String? {
+		let trimmed = remoteHost?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+		return trimmed.isEmpty ? nil : trimmed
+	}
+
+	/// This console set up to dial its remote address instead of the LAN one
+	func dialing(remote: Bool) -> Console {
+		guard remote, let remoteAddress else { return self }
+		var copy = self
+		copy.host = remoteAddress
+		return copy
+	}
 }
 
 @Observable

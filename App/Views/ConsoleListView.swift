@@ -10,6 +10,8 @@ struct ConsoleListView: View {
 	@State private var showingAdd = false
 	@State private var showingSettings = false
 	@State private var playing: Console?
+	/// Whether `playing` dials the console's remote address
+	@State private var playingRemote = false
 	@State private var consoleSettings: Console?
 	@State private var waking: UUID?
 	@State private var selection: UUID?
@@ -38,6 +40,7 @@ struct ConsoleListView: View {
 					ConsoleRow(
 						console: console,
 						status: monitor.statuses[console.id],
+						remote: monitor.usesRemote(console),
 						waking: waking == console.id,
 						confirmSymbol: selected ? gamepad.confirmSymbol : nil,
 						play: { connect(console) },
@@ -52,7 +55,7 @@ struct ConsoleListView: View {
 					}
 					.contextMenu {
 						Button { consoleSettings = console } label: {
-							Label("Stream settings", systemImage: "slider.horizontal.3")
+							Label("Console settings", systemImage: "slider.horizontal.3")
 						}
 					}
 				}
@@ -78,7 +81,7 @@ struct ConsoleListView: View {
 			.sheet(isPresented: $showingSettings) { SettingsView() }
 			.sheet(item: $consoleSettings) { console in ConsoleSettingsView(consoleID: console.id) }
 			.fullScreenCover(item: $playing) { console in
-				StreamView(console: console)
+				StreamView(console: console, remote: playingRemote)
 			}
 		}
 		.onAppear {
@@ -127,6 +130,7 @@ struct ConsoleListView: View {
 	}
 
 	private func connect(_ console: Console) {
+		playingRemote = monitor.usesRemote(console)
 		playing = console
 	}
 
@@ -162,7 +166,7 @@ struct ConsoleListView: View {
 	}
 
 	private func wake(_ console: Console) {
-		if ConsoleWaker.wake(console) {
+		if ConsoleWaker.wake(console.dialing(remote: monitor.usesRemote(console))) {
 			waking = console.id
 			// Give up auto-connecting after a while
 			DispatchQueue.main.asyncAfter(deadline: .now() + 45) {
@@ -175,6 +179,8 @@ struct ConsoleListView: View {
 private struct ConsoleRow: View {
 	let console: Console
 	let status: HostStatus?
+	/// Dialling the remote address because the console isn't on the local network
+	let remote: Bool
 	let waking: Bool
 	/// SF Symbol for the controller's confirm button when this row is selected
 	let confirmSymbol: String?
@@ -188,7 +194,11 @@ private struct ConsoleRow: View {
 				.frame(width: 44)
 			VStack(alignment: .leading, spacing: 3) {
 				Text(console.name).font(.headline)
-				Text(console.host).font(.caption).foregroundStyle(.secondary)
+				if remote, let address = console.remoteAddress {
+					Label(address, systemImage: "globe").font(.caption).foregroundStyle(.secondary)
+				} else {
+					Text(console.host).font(.caption).foregroundStyle(.secondary)
+				}
 				statusLabel
 			}
 			Spacer()

@@ -3,6 +3,9 @@ import SwiftUI
 
 struct StreamView: View {
 	let console: Console
+	/// Dial the console's remote address, chosen when the stream screen opened,
+	/// so reconnects stay on the same route
+	var remote = false
 
 	@Environment(SettingsStore.self) private var settingsStore
 	@Environment(ConsoleStore.self) private var consoleStore
@@ -302,7 +305,9 @@ struct StreamView: View {
 			settings.bitrateMbps = learned
 			log.notice("Auto bitrate: using \(learned) Mbps learned for this network")
 		}
-		let session = StreamSession(console: storedConsole ?? console, settings: settings)
+		let remote = remote
+		if remote { log.notice("Console isn't on the local network, using its remote address") }
+		let session = StreamSession(console: (storedConsole ?? console).dialing(remote: remote), settings: settings)
 		if let orientation = interfaceOrientation {
 			session.input.interfaceOrientation = orientation
 		}
@@ -310,7 +315,7 @@ struct StreamView: View {
 			if !isSavingScreenshot { showMenu = true }
 		}
 		let store = consoleStore, id = console.id
-		session.latestConsole = { store.consoles.first { $0.id == id } }
+		session.latestConsole = { store.consoles.first { $0.id == id }?.dialing(remote: remote) }
 		self.session = session
 		session.start()
 	}

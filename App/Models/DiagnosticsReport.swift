@@ -8,6 +8,8 @@ import UIKit
 struct DiagnosticsReport {
 	let consoleNames: [String]
 	let settings: StreamSettings
+	/// Consoles' remote addresses, which can be hostnames the IP patterns miss
+	var remoteAddresses: [String] = []
 
 	func writeFile() async throws -> URL {
 		let summary = await MainActor.run { Self.summary(consoleCount: consoleNames.count, settings: settings) }
@@ -73,6 +75,9 @@ struct DiagnosticsReport {
 		// Longest first, so "PS5-889 Living Room" goes before "PS5-889"
 		for (index, name) in consoleNames.enumerated().sorted(by: { $0.element.count > $1.element.count }) where name.count >= 3 {
 			text = text.replacingOccurrences(of: name, with: "<console \(index + 1)>")
+		}
+		for address in remoteAddresses where !address.isEmpty {
+			text = text.replacingOccurrences(of: address, with: "<remote address>", options: .caseInsensitive)
 		}
 		for (pattern, replacement) in Self.redactions {
 			text = text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)

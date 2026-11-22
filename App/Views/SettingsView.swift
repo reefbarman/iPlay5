@@ -241,8 +241,20 @@ struct ConsoleSettingsView: View {
 	@Environment(ConsoleStore.self) private var consoles
 	@Environment(SettingsStore.self) private var store
 	@Environment(\.dismiss) private var dismiss
+	/// Saved when editing ends rather than per keystroke, so the status poller
+	/// doesn't restart for every character
+	@State private var remoteHost = ""
 
 	private var console: Console? { consoles.consoles.first { $0.id == consoleID } }
+
+	private func saveRemoteHost() {
+		guard var console else { return }
+		let trimmed = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+		let value = trimmed.isEmpty ? nil : trimmed
+		guard value != console.remoteHost else { return }
+		console.remoteHost = value
+		consoles.update(console)
+	}
 
 	private var custom: Binding<Bool> {
 		Binding(
@@ -272,6 +284,18 @@ struct ConsoleSettingsView: View {
 			Form {
 				if let console {
 					Section {
+						TextField("IP address or hostname", text: $remoteHost)
+							.keyboardType(.URL)
+							.textInputAutocapitalization(.never)
+							.autocorrectionDisabled()
+							.submitLabel(.done)
+							.onSubmit(saveRemoteHost)
+					} header: {
+						Text("Remote address")
+					} footer: {
+						Text("For playing away from home without PSN. When \(console.name) isn't found on the local network, the app uses this address instead, such as your home's public IP or a dynamic DNS name. Your router needs to forward TCP 9295 and UDP 9295, 9296, 9297 and 9302 to \(console.name), which should have a reserved local IP. IPv4 only.")
+					}
+					Section {
 						Toggle("Custom settings", isOn: custom)
 					} footer: {
 						Text("Give \(console.name) its own video and network settings, for example when it's on Ethernet and your other console is on Wi-Fi. Display and controller settings are always shared. While you play \(console.name), changes to video and network settings in the stream menu are saved here.")
@@ -288,6 +312,8 @@ struct ConsoleSettingsView: View {
 				ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
 			}
 		}
+		.onAppear { remoteHost = console?.remoteHost ?? "" }
+		.onDisappear(perform: saveRemoteHost)
 	}
 }
 
@@ -346,7 +372,11 @@ struct SettingsView: View {
 	}
 
 	private func prepareDiagnostics() async {
-		let report = DiagnosticsReport(consoleNames: consoles.consoles.map(\.name), settings: store.settings)
+		let report = DiagnosticsReport(
+			consoleNames: consoles.consoles.map(\.name),
+			settings: store.settings,
+			remoteAddresses: consoles.consoles.compactMap(\.remoteAddress)
+		)
 		do {
 			let url = try await report.writeFile()
 			guard !Task.isCancelled else { return }
