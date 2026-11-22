@@ -664,13 +664,18 @@ final class StreamMetalView: UIView {
 
 	// MARK: Touchpad
 
+	private var shortcutSize: CGSize {
+		controls.isHidden ? Self.cornerSize : CGSize(width: 84, height: 52)
+	}
+
 	private var cornerRect: CGRect {
-		let size = controls.isHidden ? Self.cornerSize : CGSize(width: 84, height: 52)
+		let size = shortcutSize
 		return CGRect(x: bounds.maxX - size.width, y: bounds.minY, width: size.width, height: size.height)
 	}
 
 	private var leftCornerRect: CGRect {
-		CGRect(x: bounds.minX, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
+		let size = shortcutSize
+		return CGRect(x: bounds.minX, y: bounds.minY, width: size.width, height: size.height)
 	}
 
 	/// The upper half maps to the whole DualSense touchpad in either controller mode.
@@ -694,7 +699,7 @@ final class StreamMetalView: UIView {
 				onCornerTap?()
 				continue
 			}
-			if controls.isHidden, leftCornerRect.contains(p) {
+			if leftCornerRect.contains(p) {
 				onLeftCornerTap?()
 				continue
 			}

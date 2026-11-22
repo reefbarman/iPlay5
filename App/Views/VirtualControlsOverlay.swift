@@ -22,12 +22,17 @@ final class VirtualControlsOverlay: UIView {
 		let rect: CGRect
 		let action: Action
 		let rounded: Bool
+		let icon: UIImage?
 
-		init(_ label: String, _ rect: CGRect, _ action: Action, rounded: Bool = false) {
+		init(_ label: String, _ rect: CGRect, _ action: Action, rounded: Bool = false, symbol: String? = nil) {
 			self.label = label
 			self.rect = rect
 			self.action = action
 			self.rounded = rounded
+			icon = symbol.flatMap {
+				UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))?
+					.withTintColor(.white.withAlphaComponent(0.9), renderingMode: .alwaysOriginal)
+			}
 		}
 	}
 
@@ -86,9 +91,8 @@ final class VirtualControlsOverlay: UIView {
 			button("×", right, row + 36, CK_BUTTON_CROSS),
 			button("L3", x, bottom, CK_BUTTON_L3),
 			button("R3", right, bottom, CK_BUTTON_R3),
-			Control("Create", rect(middle - 65, bottom - 59, 56, 44), .button(CK_BUTTON_SHARE.rawValue), rounded: true),
-			Control("PS", rect(middle, bottom - 59, 46, 44), .button(CK_BUTTON_PS.rawValue), rounded: true),
-			Control("Options", rect(middle + 65, bottom - 59, 64, 44), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true),
+			Control("Create", rect(middle - 32, bottom - 59, 52, 44), .button(CK_BUTTON_SHARE.rawValue), rounded: true, symbol: "square.and.arrow.up"),
+			Control("Options", rect(middle + 32, bottom - 59, 52, 44), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true, symbol: "line.3.horizontal"),
 		]
 		setNeedsDisplay()
 	}
@@ -177,7 +181,8 @@ final class VirtualControlsOverlay: UIView {
 			case .button(let bit), .dpad(let bit): pressed = pad.buttons & bit != 0
 			case .trigger(let left): pressed = (left ? pad.l2 : pad.r2) != 0
 			}
-			drawControl(control.rect, radius: control.rounded ? 10 : control.rect.height / 2, pressed: pressed, label: control.label)
+			drawControl(control.rect, radius: control.rounded ? 10 : control.rect.height / 2, pressed: pressed,
+				label: control.label, icon: control.icon)
 		}
 
 		let radius = Self.stickRadius
@@ -190,13 +195,17 @@ final class VirtualControlsOverlay: UIView {
 		}
 	}
 
-	private func drawControl(_ rect: CGRect, radius: CGFloat, pressed: Bool, label: String? = nil) {
+	private func drawControl(_ rect: CGRect, radius: CGFloat, pressed: Bool, label: String? = nil, icon: UIImage? = nil) {
 		let path = UIBezierPath(roundedRect: rect.insetBy(dx: 1, dy: 1), cornerRadius: radius)
 		(pressed ? UIColor.white.withAlphaComponent(0.42) : UIColor.black.withAlphaComponent(0.36)).setFill()
 		path.fill()
 		UIColor.white.withAlphaComponent(pressed ? 0.85 : 0.36).setStroke()
 		path.lineWidth = 1
 		path.stroke()
+		if let icon {
+			icon.draw(at: CGPoint(x: rect.midX - icon.size.width / 2, y: rect.midY - icon.size.height / 2))
+			return
+		}
 		guard let label else { return }
 		let attributes: [NSAttributedString.Key: Any] = [
 			.font: UIFont.systemFont(ofSize: label.count == 1 ? 23 : 12, weight: .semibold),

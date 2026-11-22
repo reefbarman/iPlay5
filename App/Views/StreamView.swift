@@ -138,7 +138,7 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
-			if showPSButton && acceptsScreenInput && !showsVirtualControls {
+			if showPSButton && acceptsScreenInput {
 				psButton
 					.transition(.opacity)
 			}
@@ -301,7 +301,7 @@ struct StreamView: View {
 
 	private var settingsHint: some View {
 		HStack(alignment: .top) {
-			if !showPSButton && !wantsVirtualControls {
+			if !showPSButton {
 				HStack(spacing: 10) {
 					hintIcon("playstation.logo")
 					Image(systemName: "arrow.left")
