@@ -10,6 +10,7 @@
 #include <chiaki/discoveryservice.h>
 #include <chiaki/log.h>
 #include <chiaki/opusdecoder.h>
+#include <chiaki/opusencoder.h>
 #include <chiaki/orientation.h>
 #include <chiaki/regist.h>
 #include <chiaki/session.h>
@@ -424,6 +425,8 @@ void ck_regist_destroy(CKRegist *regist)
 
 #define AUDIO_RING_FRAMES 16384 // ~340 ms of 48 kHz stereo
 #define AUDIO_MAX_LATENCY_FRAMES 4800 // trim back when more than 100 ms is queued
+#define MIC_RATE 48000
+#define MIC_FRAME_SAMPLES 480 // 10 ms, what the console expects per Opus frame
 
 struct CKSession
 {
@@ -444,6 +447,15 @@ struct CKSession
 	size_t audio_read;  // frame index
 	size_t audio_count; // frames buffered
 	uint32_t audio_channels;
+
+	// Microphone: mono 48 kHz in, 10 ms stereo Opus frames out
+	pthread_mutex_t mic_mutex;
+	ChiakiOpusEncoder mic_encoder;
+	bool mic_encoder_ready;
+	bool mic_streaming; // stream connection is up
+	bool mic_connected; // console has been told a mic is attached
+	int16_t mic_buf[MIC_FRAME_SAMPLES * 2];
+	size_t mic_fill; // frames in mic_buf
 };
 
 static void session_log_cb(ChiakiLogLevel level, const char *msg, void *user)
@@ -478,10 +490,18 @@ static void event_cb(ChiakiEvent *event, void *user)
 	switch(event->type)
 	{
 		case CHIAKI_EVENT_CONNECTED:
+			pthread_mutex_lock(&s->mic_mutex);
+			s->mic_streaming = true;
+			pthread_mutex_unlock(&s->mic_mutex);
 			if(s->cb.on_event)
 				s->cb.on_event(s->cb.user, CK_EVENT_CONNECTED, 0, NULL);
 			break;
 		case CHIAKI_EVENT_QUIT: {
+			pthread_mutex_lock(&s->mic_mutex);
+			s->mic_streaming = false;
+			s->mic_connected = false;
+			s->mic_fill = 0;
+			pthread_mutex_unlock(&s->mic_mutex);
 			if(!s->cb.on_event)
 				break;
 			char msg[512];
@@ -596,6 +616,7 @@ static void haptics_cb(uint8_t *buf, size_t buf_size, void *user)
 	s->cb.on_haptics(s->cb.user, (const int16_t *)buf, buf_size / 4);
 }
 
+
 CKSession *ck_session_create(const CKSessionConfig *config, const CKSessionCallbacks *callbacks)
 {
 	if(!config || !config->host || !callbacks)
@@ -608,6 +629,7 @@ CKSession *ck_session_create(const CKSessionConfig *config, const CKSessionCallb
 	s->audio_channels = 2;
 	pthread_mutex_init(&s->state_mutex, NULL);
 	pthread_mutex_init(&s->audio_mutex, NULL);
+	pthread_mutex_init(&s->mic_mutex, NULL);
 	chiaki_controller_state_set_idle(&s->state);
 	chiaki_orientation_tracker_init(&s->orient);
 
@@ -653,6 +675,13 @@ CKSession *ck_session_create(const CKSessionConfig *config, const CKSessionCallb
 	chiaki_opus_decoder_get_sink(&s->opus, &audio_sink);
 	chiaki_session_set_audio_sink(&s->session, &audio_sink);
 
+	// Same format the desktop client sends: stereo 16-bit, 48 kHz, 10 ms frames
+	chiaki_opus_encoder_init(&s->mic_encoder, &s->log);
+	ChiakiAudioHeader mic_header;
+	chiaki_audio_header_set(&mic_header, 2, 16, MIC_RATE, MIC_FRAME_SAMPLES);
+	chiaki_opus_encoder_header(&mic_header, &s->mic_encoder, &s->session);
+	s->mic_encoder_ready = s->mic_encoder.opus_encoder && s->mic_encoder.audio_sender;
+
 	if(config->enable_dualsense)
 	{
 		ChiakiAudioSink haptics_sink;
@@ -694,11 +723,18 @@ void ck_session_destroy(CKSession *s)
 	}
 	if(s->initialized)
 	{
+		// Wait out a mic push in flight before freeing the encoder
+		pthread_mutex_lock(&s->mic_mutex);
+		s->mic_streaming = false;
+		s->mic_encoder_ready = false;
+		chiaki_opus_encoder_fini(&s->mic_encoder);
+		pthread_mutex_unlock(&s->mic_mutex);
 		chiaki_session_fini(&s->session);
 		chiaki_opus_decoder_fini(&s->opus);
 	}
 	pthread_mutex_destroy(&s->state_mutex);
 	pthread_mutex_destroy(&s->audio_mutex);
+	pthread_mutex_destroy(&s->mic_mutex);
 	free(s->host);
 	free(s);
 }
@@ -896,4 +932,60 @@ size_t ck_session_audio_buffered(CKSession *s)
 	size_t n = s->audio_count;
 	pthread_mutex_unlock(&s->audio_mutex);
 	return n;
+}
+
+// Microphone ---------------------------------------------------------------
+
+int ck_session_mic_set_muted(CKSession *s, bool muted)
+{
+	if(!s || !s->started)
+		return CHIAKI_ERR_UNINITIALIZED;
+	pthread_mutex_lock(&s->mic_mutex);
+	bool ready = s->mic_encoder_ready && s->mic_streaming;
+	bool connect = ready && !muted && !s->mic_connected;
+	if(connect)
+		s->mic_connected = true;
+	if(muted)
+		s->mic_fill = 0;
+	pthread_mutex_unlock(&s->mic_mutex);
+	if(!ready)
+		return CHIAKI_ERR_UNINITIALIZED;
+
+	if(connect)
+	{
+		ChiakiErrorCode err = chiaki_session_connect_microphone(&s->session);
+		if(err != CHIAKI_ERR_SUCCESS)
+		{
+			pthread_mutex_lock(&s->mic_mutex);
+			s->mic_connected = false;
+			pthread_mutex_unlock(&s->mic_mutex);
+			return (int)err;
+		}
+	}
+	// chiaki's flag is inverted: true asks the console to unmute
+	return (int)chiaki_session_toggle_microphone(&s->session, !muted);
+}
+
+void ck_session_mic_push(CKSession *s, const int16_t *samples, size_t frames)
+{
+	if(!s || !samples)
+		return;
+	pthread_mutex_lock(&s->mic_mutex);
+	if(!s->mic_encoder_ready || !s->mic_streaming || !s->mic_connected)
+	{
+		s->mic_fill = 0;
+		pthread_mutex_unlock(&s->mic_mutex);
+		return;
+	}
+	for(size_t i = 0; i < frames; i++)
+	{
+		s->mic_buf[s->mic_fill * 2] = samples[i];
+		s->mic_buf[s->mic_fill * 2 + 1] = samples[i];
+		if(++s->mic_fill == MIC_FRAME_SAMPLES)
+		{
+			chiaki_opus_encoder_frame(s->mic_buf, &s->mic_encoder);
+			s->mic_fill = 0;
+		}
+	}
+	pthread_mutex_unlock(&s->mic_mutex);
 }

@@ -279,6 +279,15 @@ extern "C"
     /// Number of audio frames currently buffered.
     size_t ck_session_audio_buffered(CKSession *session);
 
+    // Microphone ---------------------------------------------------------------
+
+    /// Mutes or unmutes the remote mic. The first unmute tells the console a mic is
+    /// attached. Only works once CK_EVENT_CONNECTED has fired; returns non-zero otherwise.
+    int ck_session_mic_set_muted(CKSession *session, bool muted);
+    /// Feeds mono int16 mic audio at 48 kHz, any chunk size. Encoded and sent in 10 ms
+    /// frames; dropped while muted or before the stream connects. Thread-safe.
+    void ck_session_mic_push(CKSession *session, const int16_t *samples, size_t frames);
+
 #ifdef __cplusplus
 }
 #endif

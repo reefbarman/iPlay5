@@ -1,6 +1,7 @@
 import ChiakiKit
 import CoreMotion
 import GameController
+import os
 import UIKit
 
 /// Maps the connected game controller to chiaki's DualSense state.
@@ -16,6 +17,8 @@ final class ControllerInput {
 	/// gyro rad/s, accel g, DualSense axes, monotonic microseconds.
 	var onMotion: ((SIMD3<Float>, SIMD3<Float>, UInt32) -> Void)?
 	var onTouch: ((TouchEvent) -> Void)?
+	/// Gyro aiming, on the main thread: gyro rad/s in DualSense axes and the sensor's microseconds
+	var onGyroAim: ((SIMD3<Float>, UInt32) -> Void)?
 	/// Select + Start held for a second
 	var onMenuCombo: (() -> Void)?
 
@@ -27,6 +30,26 @@ final class ControllerInput {
 
 	var selectIsTouchpad = false
 	var phoneMotionEnabled = true
+
+	/// Gyro aiming: motion goes to `onGyroAim` instead, and the console sees a
+	/// controller held still so the game's own motion controls stay put.
+	/// Uses the phone's gyro when the controller has none, even with phone motion off.
+	var gyroAimEnabled = false {
+		didSet {
+			guard gyroAimEnabled != oldValue else { return }
+			let enabled = gyroAimEnabled
+			gyroAim.withLock { $0 = enabled }
+			// Before start() pickController sorts out the motion source
+			guard !observers.isEmpty, controller?.motion?.hasRotationRate != true else { return }
+			if enabled {
+				startPhoneMotion()
+			} else if !phoneMotionEnabled {
+				motionManager.stopDeviceMotionUpdates()
+			}
+		}
+	}
+	/// `gyroAimEnabled` for the motion queue
+	private let gyroAim = OSAllocatedUnfairLock(initialState: false)
 
 	private(set) var controllerName: String?
 	private var controller: GCController?
@@ -234,18 +257,41 @@ final class ControllerInput {
 	// MARK: - Motion
 
 	private func controllerMotion(_ motion: GCMotion) {
-		// GameController reports DualSense motion in its own frame; untested
-		// against real games, so treat as a starting point.
+		// GameController's rotation axes for a controller are x right, y towards the
+		// player, z up. Reorder to the DualSense's (x right, y up, z towards the player),
+		// as SDL does (src/joystick/apple/SDL_mfijoystick.m).
 		let r = motion.rotationRate
-		let g = motion.gravity
-		let u = motion.userAcceleration
-		let gyro = SIMD3<Float>(Float(r.x), Float(r.y), Float(r.z))
-		let accel = -SIMD3<Float>(Float(g.x + u.x), Float(g.y + u.y), Float(g.z + u.z))
-		onMotion?(gyro, accel, Self.nowMicros())
+		let gyro = SIMD3<Float>(Float(r.x), Float(r.z), Float(-r.y))
+		// A DualSense only reports raw acceleration: gravity and userAcceleration stay zero
+		let a: GCAcceleration
+		if motion.hasGravityAndUserAcceleration {
+			let g = motion.gravity
+			let u = motion.userAcceleration
+			a = GCAcceleration(x: g.x + u.x, y: g.y + u.y, z: g.z + u.z)
+		} else {
+			a = motion.acceleration
+		}
+		let accel = -SIMD3<Float>(Float(a.x), Float(a.y), Float(a.z))
+		sendMotion(gyro: gyro, accel: accel, timestamp: Self.nowMicros())
+	}
+
+	/// Any thread
+	private func sendMotion(gyro: SIMD3<Float>, accel: SIMD3<Float>, timestamp: UInt32) {
+		guard gyroAim.withLock({ $0 }) else {
+			onMotion?(gyro, accel, timestamp)
+			return
+		}
+		// Flat and still, as chiaki starts out
+		onMotion?(.zero, SIMD3(0, 1, 0), timestamp)
+		if Thread.isMainThread {
+			onGyroAim?(gyro, timestamp)
+		} else {
+			DispatchQueue.main.async { [weak self] in self?.onGyroAim?(gyro, timestamp) }
+		}
 	}
 
 	private func startPhoneMotion() {
-		guard phoneMotionEnabled, motionManager.isDeviceMotionAvailable else { return }
+		guard phoneMotionEnabled || gyroAimEnabled, motionManager.isDeviceMotionAvailable else { return }
 		guard !motionManager.isDeviceMotionActive else { return }
 		motionManager.deviceMotionUpdateInterval = 1.0 / 100.0
 		motionManager.startDeviceMotionUpdates(to: motionQueue) { [weak self] data, _ in
@@ -274,7 +320,7 @@ final class ControllerInput {
 			accel = SIMD3(Float(-a.y), Float(a.x), Float(a.z))
 		}
 		// CoreMotion reports gravity's direction; DualSense reports the reaction (+1 g up at rest)
-		onMotion?(gyro, -accel, UInt32(truncatingIfNeeded: UInt64(m.timestamp * 1_000_000)))
+		sendMotion(gyro: gyro, accel: -accel, timestamp: UInt32(truncatingIfNeeded: UInt64(m.timestamp * 1_000_000)))
 	}
 
 	private static func nowMicros() -> UInt32 {

@@ -45,6 +45,8 @@
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>iPlay5 finds and connects to your PS5 on the local network for Remote Play.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>iPlay5 sends your voice to your PS5 for game and party chat when Microphone is on in settings.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -44,6 +44,7 @@ struct StreamView: View {
 
 	private var needsController: Bool { !hasController && sessionControlsMode == nil }
 
+
 	/// This console as currently stored, with any custom settings saved since the screen opened
 	private var storedConsole: Console? { consoleStore.consoles.first { $0.id == console.id } }
 
@@ -226,6 +227,9 @@ struct StreamView: View {
 				frameGenButton(session, compact: showsVirtualControls, pinned: pinsStreamButtons)
 				if session.settings.frameCapture {
 					captureButton(session, compact: showsVirtualControls)
+				}
+				if session.micActive && !marketingScreenshotMode {
+					micButton(session, raised: session.settings.frameCapture)
 				}
 			}
 
@@ -541,6 +545,31 @@ struct StreamView: View {
 		.ignoresSafeArea()
 	}
 
+	// MARK: - Microphone (bottom left)
+
+	/// Mutes and unmutes the mic. Sits above the frame capture button when that's on.
+	private func micButton(_ session: StreamSession, raised: Bool) -> some View {
+		Button {
+			session.toggleMicMuted()
+		} label: {
+			Image(systemName: session.micMuted ? "mic.slash.fill" : "mic.fill")
+				.font(.title3)
+				.foregroundStyle(session.micMuted ? .red : .white)
+				.frame(width: 24, height: 24)
+				.padding(.horizontal, 10)
+				.padding(.vertical, 6)
+				.background(.black.opacity(0.45), in: Capsule())
+				.opacity(session.micMuted ? 1 : 0.6)
+				.padding(.bottom, raised ? 56 : 12)
+				.padding(.leading, 16)
+				.contentShape(Rectangle())
+		}
+		.buttonStyle(.plain)
+		.accessibilityLabel(session.micMuted ? "Unmute microphone" : "Mute microphone")
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+		.ignoresSafeArea()
+	}
+
 	// MARK: - Heat warning
 
 	private func flashHeatWarning() {
@@ -845,6 +874,11 @@ struct StreamView: View {
 					if wantsVirtualControls, let status = session?.captureStatus {
 						Text(status).foregroundStyle(.secondary)
 					}
+					if let session, session.micActive {
+						Button(session.micMuted ? "Unmute microphone" : "Mute microphone") {
+							session.toggleMicMuted()
+						}
+					}
 					Button("Put console in rest mode") {
 						session?.putConsoleToSleep()
 						showMenu = false
@@ -890,6 +924,7 @@ struct StreamView: View {
 				} footer: {
 					Text("Watches the next \(ConnectionCheck.duration) seconds of the stream for lost video, then suggests a bitrate (and network smoothing) you can apply with one tap. Play something with plenty of movement while it checks, since the PS5 sends much less on menus and quiet scenes.")
 				}
+
 				if let sessionControlsMode, sessionControlsMode != settingsStore.settings.virtualControls {
 					Section {
 						LabeledContent("Virtual controls this session", value: sessionControlsMode.label)

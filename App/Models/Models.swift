@@ -148,6 +148,38 @@ enum PhoneHaptics: String, Codable, CaseIterable, Identifiable {
 	}
 }
 
+/// Gyro aiming: turn the controller (or the phone) to move the right stick
+enum GyroAimMode: String, Codable, CaseIterable, Identifiable {
+	case off, always, holdingL2, holdingR1
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .off: "Off"
+		case .always: "Always"
+		case .holdingL2: "While holding L2"
+		case .holdingR1: "While holding R1"
+		}
+	}
+}
+
+/// What looks left and right with gyro aiming
+enum GyroAimTurning: String, Codable, CaseIterable, Identifiable {
+	/// Steam Input's "local space"
+	case turnAndTilt, turn, tilt
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .turnAndTilt: "Turn and tilt"
+		case .turn: "Turn"
+		case .tilt: "Tilt"
+		}
+	}
+	var usesYaw: Bool { self != .tilt }
+	var usesRoll: Bool { self != .turn }
+}
+
 enum ControlsSize: String, Codable, CaseIterable, Identifiable {
 	case small, medium, large
 
@@ -199,10 +231,26 @@ struct StreamSettings: Codable, Equatable {
 	var statsMode: StatsMode = .off
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
+	/// Gyro moves the right stick instead of going to the game as motion
+	var gyroAim: GyroAimMode = .off
+	/// Multiplies how far the right stick moves for a given turn speed, 0.25...3
+	var gyroAimSensitivity: Double = 1
+	var gyroAimInvertY: Bool = false
+	var gyroAimTurning: GyroAimTurning = .turnAndTilt
+	/// Up/down speed relative to left/right, 0.5...3
+	var gyroAimVerticalScale: Double = 1.5
+	/// The game's own stick dead zone, which gyro movement starts past, 0...0.4
+	var gyroAimDeadzone: Double = 0.15
+	/// The game's stick response curve power, undone for gyro, 1...3 (1 is linear)
+	var gyroAimResponseCurve: Double = 1.5
+	/// Push left/right and up/down past the game's dead zone separately
+	var gyroAimPerAxisDeadzone: Bool = false
 	/// Master switch for rumble, haptics and trigger motors
 	var rumble: Bool = true
 	/// How strongly rumble plays on the phone (virtual controls, or a controller without motors)
 	var phoneHaptics: PhoneHaptics = .full
+	/// Send the phone's mic to the console for game and party chat
+	var microphone: Bool = false
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
 	var virtualControls: VirtualControlsMode = .auto
@@ -283,8 +331,17 @@ struct StreamSettings: Codable, Equatable {
 			statsMode = show ? .advanced : .off
 		}
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
+		gyroAim = (try? c.decodeIfPresent(GyroAimMode.self, forKey: .gyroAim)) ?? d.gyroAim
+		gyroAimSensitivity = min(3, max(0.25, try c.decodeIfPresent(Double.self, forKey: .gyroAimSensitivity) ?? d.gyroAimSensitivity))
+		gyroAimInvertY = try c.decodeIfPresent(Bool.self, forKey: .gyroAimInvertY) ?? d.gyroAimInvertY
+		gyroAimTurning = (try? c.decodeIfPresent(GyroAimTurning.self, forKey: .gyroAimTurning)) ?? d.gyroAimTurning
+		gyroAimVerticalScale = min(3, max(0.5, try c.decodeIfPresent(Double.self, forKey: .gyroAimVerticalScale) ?? d.gyroAimVerticalScale))
+		gyroAimDeadzone = min(0.4, max(0, try c.decodeIfPresent(Double.self, forKey: .gyroAimDeadzone) ?? d.gyroAimDeadzone))
+		gyroAimResponseCurve = min(3, max(1, try c.decodeIfPresent(Double.self, forKey: .gyroAimResponseCurve) ?? d.gyroAimResponseCurve))
+		gyroAimPerAxisDeadzone = try c.decodeIfPresent(Bool.self, forKey: .gyroAimPerAxisDeadzone) ?? d.gyroAimPerAxisDeadzone
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		phoneHaptics = (try? c.decodeIfPresent(PhoneHaptics.self, forKey: .phoneHaptics)) ?? d.phoneHaptics
+		microphone = try c.decodeIfPresent(Bool.self, forKey: .microphone) ?? d.microphone
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		virtualControls = (try? c.decodeIfPresent(VirtualControlsMode.self, forKey: .virtualControls)) ?? d.virtualControls
 		controlsSize = (try? c.decodeIfPresent(ControlsSize.self, forKey: .controlsSize)) ?? d.controlsSize

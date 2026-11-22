@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 /// Stream settings, shared by the main settings sheet and the in-stream menu.
@@ -9,6 +10,7 @@ struct StreamSettingsForm: View {
 	var bitrateTitle: String?
 
 	@Environment(BitrateMemory.self) private var bitrateMemory
+	@State private var micDenied = AVAudioApplication.shared.recordPermission == .denied
 
 	private var upscalingSelection: Binding<UpscalingMode> {
 		Binding(
@@ -62,6 +64,48 @@ struct StreamSettingsForm: View {
 			}
 			.disabled(!settings.rumble)
 			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
+			Picker("Gyro aiming", selection: $settings.gyroAim) {
+				ForEach(GyroAimMode.allCases) { Text($0.label).tag($0) }
+			}
+			if settings.gyroAim != .off {
+				Picker("Look left/right by", selection: $settings.gyroAimTurning) {
+					ForEach(GyroAimTurning.allCases) { Text($0.label).tag($0) }
+				}
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Gyro sensitivity")
+						Spacer()
+						Text("\(settings.gyroAimSensitivity.formatted(.number.precision(.fractionLength(0...2))))×").foregroundStyle(.secondary).monospacedDigit()
+					}
+					Slider(value: $settings.gyroAimSensitivity, in: 0.25...3, step: 0.05)
+				}
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Up/down speed")
+						Spacer()
+						Text("\(settings.gyroAimVerticalScale.formatted(.number.precision(.fractionLength(0...2))))×").foregroundStyle(.secondary).monospacedDigit()
+					}
+					Slider(value: $settings.gyroAimVerticalScale, in: 0.5...3, step: 0.05)
+				}
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Game dead zone")
+						Spacer()
+						Text("\(Int((settings.gyroAimDeadzone * 100).rounded()))%").foregroundStyle(.secondary).monospacedDigit()
+					}
+					Slider(value: $settings.gyroAimDeadzone, in: 0...0.4, step: 0.01)
+				}
+				Toggle("Dead zone per direction", isOn: $settings.gyroAimPerAxisDeadzone)
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Fine aim boost")
+						Spacer()
+						Text("\(settings.gyroAimResponseCurve.formatted(.number.precision(.fractionLength(1))))").foregroundStyle(.secondary).monospacedDigit()
+					}
+					Slider(value: $settings.gyroAimResponseCurve, in: 1...3, step: 0.1)
+				}
+				Toggle("Invert gyro up/down", isOn: $settings.gyroAimInvertY)
+			}
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
 			NavigationLink { ControlsGuideView() } label: {
 				Label("Controls Guide", systemImage: "gamecontroller")
@@ -69,7 +113,27 @@ struct StreamSettingsForm: View {
 		} header: {
 			Text("Controller")
 		} footer: {
-			Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone or GameSir G8+). Phone gyro works without a controller or with one that has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
+			Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone or GameSir G8+). Phone gyro works without a controller or with one that has no motion sensors, like a GameSir G8+. Gyro aiming turns the controller's motion (or the phone's, if the controller has none) into right stick movement, on top of the stick itself, and stops sending motion to the game. Tilt like a steering wheel or turn left and right to look around (Look left/right by picks which), and tip the top towards or away from you to look up and down. Up/down speed makes looking up and down faster than left and right, as most games turn slower vertically. Game dead zone is how much stick movement the game ignores: raise it until small, slow movements move the camera, and lower it if the camera creeps when you're nearly still. Fine aim boost undoes games slowing down small stick movements: raise it if small corrections feel sluggish, lower it if they overshoot. 1 turns it off. Dead zone per direction pushes left/right and up/down past the dead zone separately, so the small part of a diagonal correction isn't lost. Try it if slight up/down adjustments get ignored while moving sideways, or the other way round. Hold Select + Start for a second during a stream to open the menu.")
+		}
+
+		Section {
+			Toggle("Microphone", isOn: $settings.microphone)
+				.onChange(of: settings.microphone) { _, on in
+					guard on else { return }
+					AVAudioApplication.requestRecordPermission { granted in
+						DispatchQueue.main.async {
+							micDenied = !granted
+							if !granted { settings.microphone = false }
+						}
+					}
+				}
+		} header: {
+			Text("Audio")
+		} footer: {
+			if micDenied {
+				Text("iPlay5 doesn't have access to the microphone. Turn it on in Settings › Apps › iPlay5.")
+			}
+			Text("Microphone sends your voice to the PS5 for game and party chat. Tap the mic button in the bottom-left corner of the stream to mute it. On the phone's speaker, echo cancellation stops your party hearing the game. With AirPods or other Bluetooth headphones the phone's mic is used, unless you're on iOS 26 with AirPods that support high-quality recording.")
 		}
 
 		Section {

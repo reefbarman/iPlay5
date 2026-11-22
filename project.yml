@@ -53,6 +53,7 @@ targets:
         # Lets ProMotion run above 60 Hz
         CADisableMinimumFrameDurationOnPhone: true
         NSLocalNetworkUsageDescription: iPlay5 finds and connects to your PS5 on the local network for Remote Play.
+        NSMicrophoneUsageDescription: iPlay5 sends your voice to your PS5 for game and party chat when Microphone is on in settings.
         # Game controllers can drive the UI and Game Mode kicks in while streaming
         GCSupportsControllerUserInteraction: true
         GCSupportsGameMode: true

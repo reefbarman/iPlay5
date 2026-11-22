@@ -91,6 +91,10 @@ final class StreamSession {
 	/// "Optimise connection" while it's watching the stream, and what it found
 	private(set) var connectionCheck: ConnectionCheck?
 	private(set) var connectionCheckResult: ConnectionCheckResult?
+	/// Streaming with the mic on (setting on and permission granted)
+	private(set) var micActive = false
+	/// The user muted the mic. Kept across reconnects.
+	private(set) var micMuted = false
 
 	/// Refreshed from `latestConsole` on every connect, so retries follow an IP change
 	private(set) var console: Console
@@ -116,6 +120,9 @@ final class StreamSession {
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
 	@ObservationIgnored private var physicalPad = CKPadState()
 	@ObservationIgnored private var virtualPad = VirtualPadState()
+	@ObservationIgnored private var gyroStick = GyroStick()
+	/// Where gyro aiming is pushing the right stick, on top of the sticks themselves
+	@ObservationIgnored private var gyroStickPosition = SIMD2<Float>.zero
 	@ObservationIgnored private var touchpadClicks: [Int: DispatchWorkItem] = [:]
 	@ObservationIgnored private var psRelease: DispatchWorkItem?
 	@ObservationIgnored private var reconnectAttempt = 0
@@ -138,6 +145,8 @@ final class StreamSession {
 	@ObservationIgnored private var qualityLossSum: Double = 0
 	@ObservationIgnored private var qualityPeak: Double = 0
 	@ObservationIgnored private var qualityLostAtStart = 0
+	/// What we last told the console about the mic: live or muted. nil until we've said anything.
+	@ObservationIgnored private var micConsoleLive: Bool?
 
 	/// What chiaki's callbacks point at: this session plus which connection they belong to.
 	/// Tearing a connection down makes chiaki send a "stopped" event that reaches the main
@@ -296,6 +305,7 @@ final class StreamSession {
 
 		input.selectIsTouchpad = settings.selectIsTouchpad
 		input.phoneMotionEnabled = settings.phoneMotion
+		input.gyroAimEnabled = settings.gyroAim != .off
 		input.feedback.rumbleEnabled = settings.rumble
 		input.feedback.phoneHapticsScale = settings.phoneHaptics.scale
 		input.onPad = { [weak self] pad in
@@ -307,10 +317,13 @@ final class StreamSession {
 			ck_session_set_motion(handle, gyro.x, gyro.y, gyro.z, accel.x, accel.y, accel.z, ts)
 		}
 		input.onTouch = { [weak self] event in self?.handleTouch(event) }
+		input.onGyroAim = { [weak self] gyro, ts in self?.gyroAimed(gyro: gyro, timestamp: ts) }
 		input.start()
 
-		audio.start(session: created)
+		audio.start(session: created, mic: settings.microphone)
 		audio.muted = paused
+		micConsoleLive = nil
+		applyMicState()
 
 		let err = ck_session_start(created)
 		if err != 0 {
@@ -397,6 +410,7 @@ final class StreamSession {
 	/// while we can't see the controller (iOS doesn't send controller input to background apps)
 	private func releaseInput() {
 		physicalPad = CKPadState()
+		gyroStickPosition = .zero
 		resetScreenInput()
 		for slot in touchIDs.keys { handleTouch(.up(slot: slot)) }
 		sendPad()
@@ -450,8 +464,18 @@ final class StreamSession {
 			new.resolution != settings.resolution || new.fps != settings.fps || new.bitrateMbps != settings.bitrateMbps
 			|| new.effectiveCodec != settings.effectiveCodec || new.hdr != settings.hdr
 			|| new.takionV20 != settings.takionV20 || new.networkSmoothing != settings.networkSmoothing
+		let micChanged = new.microphone != settings.microphone
 		settings = new
+		if micChanged, handle != nil {
+			audio.setMic(new.microphone)
+			applyMicState()
+		}
 		input.selectIsTouchpad = new.selectIsTouchpad
+		input.gyroAimEnabled = new.gyroAim != .off
+		if new.gyroAim == .off, gyroStickPosition != .zero {
+			gyroStickPosition = .zero
+			sendPad()
+		}
 		input.feedback.rumbleEnabled = new.rumble
 		input.feedback.phoneHapticsScale = new.phoneHaptics.scale
 		renderer?.setDisplayMode(new.displayMode)
@@ -500,6 +524,7 @@ final class StreamSession {
 		self.paused = paused
 		renderer?.setPaused(paused)
 		audio.muted = paused
+		applyMicState()
 		if !paused, let handle {
 			// We dropped frames while paused, so get a clean keyframe
 			ck_session_request_idr(handle)
@@ -543,6 +568,30 @@ final class StreamSession {
 		let work = DispatchWorkItem { [weak self] in self?.notice = nil }
 		noticeWork = work
 		DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: work)
+	}
+
+	// MARK: - Microphone
+
+	func toggleMicMuted() {
+		micMuted.toggle()
+		applyMicState()
+	}
+
+	/// Sends mic audio while streaming, unmuted and not paused, and tells the console to match
+	private func applyMicState() {
+		let streaming = state == .streaming && handle != nil
+		micActive = streaming && audio.micEnabled
+		let live = micActive && !micMuted && !paused
+		audio.micLive = live
+		// The first unmute attaches the mic on the console. Don't attach one just to mute it.
+		guard let handle, streaming, micConsoleLive != live, live || micConsoleLive != nil else { return }
+		let err = ck_session_mic_set_muted(handle, !live)
+		if err == 0 {
+			micConsoleLive = live
+			log.notice("Mic \(live ? "live" : "muted", privacy: .public)")
+		} else {
+			log.error("Mic \(live ? "unmute" : "mute", privacy: .public) failed (error \(err))")
+		}
 	}
 
 	// MARK: - Optimise connection
@@ -601,9 +650,13 @@ final class StreamSession {
 		connectionCheck = nil
 		input.stop()
 		physicalPad = CKPadState()
+		gyroStickPosition = .zero
+		gyroStick.reset()
 		resetScreenInput()
 		touchIDs.removeAll()
 		audio.stop()
+		micActive = false
+		micConsoleLive = nil
 		if let handle {
 			// Stops and joins chiaki's threads: no callbacks after this
 			ck_session_destroy(handle)
@@ -640,6 +693,7 @@ final class StreamSession {
 		case CK_EVENT_CONNECTED:
 			reconnectAttempt = 0
 			state = .streaming
+			applyMicState()
 		case CK_EVENT_LOGIN_PIN_REQUEST:
 			state = .needsPIN(incorrect: code != 0)
 		case CK_EVENT_KEYBOARD_OPEN:
@@ -697,7 +751,39 @@ final class StreamSession {
 		pad.r2 = max(pad.r2, virtualPad.r2)
 		if let stick = virtualPad.leftStick { (pad.left_x, pad.left_y) = (stick.x, stick.y) }
 		if let stick = virtualPad.rightStick { (pad.right_x, pad.right_y) = (stick.x, stick.y) }
+		if gyroStickPosition != .zero {
+			pad.right_x = Int16(clamping: Int(pad.right_x) + Int((gyroStickPosition.x * 32767).rounded()))
+			pad.right_y = Int16(clamping: Int(pad.right_y) + Int((gyroStickPosition.y * 32767).rounded()))
+		}
 		ck_session_set_pad(handle, &pad)
+	}
+
+	// MARK: - Gyro aiming (main thread)
+
+	private func gyroAimed(gyro: SIMD3<Float>, timestamp: UInt32) {
+		gyroStick.sensitivity = Float(settings.gyroAimSensitivity)
+		gyroStick.invertY = settings.gyroAimInvertY
+		gyroStick.turning = settings.gyroAimTurning
+		gyroStick.verticalScale = Float(settings.gyroAimVerticalScale)
+		gyroStick.deadzone = Float(settings.gyroAimDeadzone)
+		gyroStick.responseCurve = Float(settings.gyroAimResponseCurve)
+		gyroStick.perAxisDeadzone = settings.gyroAimPerAxisDeadzone
+		// Keeps smoothing while the hold button is up
+		let position = gyroStick.update(gyro: gyro, timestamp: timestamp)
+		let next = gyroAimHeld ? position : .zero
+		guard next != gyroStickPosition else { return }
+		gyroStickPosition = next
+		sendPad()
+	}
+
+	/// The button for gyro aiming is down, if it needs one. The game still gets the button.
+	private var gyroAimHeld: Bool {
+		switch settings.gyroAim {
+		case .off: false
+		case .always: true
+		case .holdingL2: max(physicalPad.l2, virtualPad.l2) > 30
+		case .holdingR1: (physicalPad.buttons | virtualPad.buttons) & CK_BUTTON_R1.rawValue != 0
+		}
 	}
 
 	// MARK: - On-screen touchpad (main thread)
