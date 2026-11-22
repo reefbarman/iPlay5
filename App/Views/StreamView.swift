@@ -216,8 +216,11 @@ struct StreamView: View {
 
 			if let session, !marketingScreenshotMode, !folded, !portrait {
 				if let check = session.connectionCheck {
-					connectionCheckProgress(check, session: session)
-						.transition(.opacity)
+					// With stats showing, the countdown sits in the stats line instead
+					if session.settings.statsMode == .off {
+						connectionCheckProgress(check, session: session)
+							.transition(.opacity)
+					}
 				} else if let result = session.connectionCheckResult {
 					connectionCheckResult(result, session: session)
 						.transition(.opacity)
@@ -604,8 +607,8 @@ struct StreamView: View {
 		.padding(16)
 		.frame(maxWidth: 460)
 		.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-		.padding(.top, 16)
+		// Centred, clear of the stats along the top
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 	}
 
 	private func hintLabel(_ text: String) -> some View {
@@ -664,7 +667,8 @@ struct StreamView: View {
 			// Held back while the corner hints are up so the two don't overlap
 			if session.settings.statsMode != .off && !marketingScreenshotMode
 				&& !(showSettingsHint && !showMenuButton) {
-				StatsOverlay(stats: session.stats, settings: session.settings, videoAspect: letterboxAspect(for: session))
+				StatsOverlay(stats: session.stats, settings: session.settings, videoAspect: letterboxAspect(for: session),
+					checkSecondsLeft: session.connectionCheck?.secondsLeft)
 					.allowsHitTesting(false)
 					.transition(.opacity)
 			}
@@ -828,13 +832,19 @@ struct StreamView: View {
 					Text("Phone")
 				}
 				Section {
-					Button {
-						session?.startConnectionCheck()
-						showMenu = false
-					} label: {
-						Label("Optimise connection", systemImage: "wifi")
+					if session?.connectionCheck != nil {
+						Button("Stop the connection check", role: .destructive) {
+							session?.dismissConnectionCheck()
+						}
+					} else {
+						Button {
+							session?.startConnectionCheck()
+							showMenu = false
+						} label: {
+							Label("Optimise connection", systemImage: "wifi")
+						}
+						.disabled(session?.state != .streaming)
 					}
-					.disabled(session?.state != .streaming || session?.connectionCheck != nil)
 				} header: {
 					Text("Connection")
 				} footer: {
@@ -893,6 +903,8 @@ private struct StatsOverlay: View {
 	let settings: StreamSettings
 	/// The picture's aspect ratio when it's fitted (letterboxed), nil when it fills the screen
 	let videoAspect: CGFloat?
+	/// Optimise connection is running: seconds until it's done
+	var checkSecondsLeft: Int?
 
 	/// Keeps clear of the PS button and settings hot corners
 	private static let cornerReserve: CGFloat = 84
@@ -977,7 +989,13 @@ private struct StatsOverlay: View {
 		if settings.frameGeneration {
 			items.append(Item(label: "FG", value: stats.frameGenActive ? "+\(stats.generatedFPS)" : "off", warn: !stats.frameGenActive))
 		}
+		appendCheck(&items)
 		return items
+	}
+
+	private func appendCheck(_ items: inout [Item]) {
+		guard let checkSecondsLeft else { return }
+		items.append(Item(label: "checking", value: "\(checkSecondsLeft)s", warn: true))
 	}
 
 	/// Related values share a cell with short labels so the advanced stats stay
@@ -1021,6 +1039,7 @@ private struct StatsOverlay: View {
 				.replacingOccurrences(of: " Controller", with: "")
 			items.append(Item(label: "pad", value: short))
 		}
+		appendCheck(&items)
 		return items
 	}
 
