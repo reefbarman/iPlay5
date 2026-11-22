@@ -36,6 +36,14 @@ final class MetalRenderer {
 	private var displayMode: DisplayMode = .fit
 	private var bicubic = true
 	private var paused = false
+	/// One real video frame retained for a native-pixel snapshot, without reading live drawables.
+	private struct ScreenshotFrame {
+		let luma: CVMetalTexture
+		let chroma: CVMetalTexture
+		let uniforms: RenderUniforms
+		let size: CGSize
+	}
+	private var screenshotFrame: ScreenshotFrame?
 
 	// Frame generation (experimental)
 	private var frameGeneration = false
@@ -163,9 +171,12 @@ final class MetalRenderer {
 		lock.withLock { self.paused = paused }
 	}
 
-	/// A new connection: the smoothing buffer starts from nothing held back
+	/// A new connection: discard frames from the previous stream.
 	func resetSmoothing() {
-		lock.withLock { pacer }?.reset()
+		lock.withLock {
+			screenshotFrame = nil
+			return pacer
+		}?.reset()
 	}
 
 	/// Network smoothing: frames held back now, frames dropped to keep the delay bounded
@@ -183,6 +194,52 @@ final class MetalRenderer {
 			return
 		}
 		capture.requestSave(completion)
+	}
+
+	/// Renders the decoded frame and its fit/zoom geometry into a readable SDR texture.
+	func renderScreenshotFrame() async throws -> CGImage {
+		guard let frame = lock.withLock({ screenshotFrame }),
+			let luma = CVMetalTextureGetTexture(frame.luma), let chroma = CVMetalTextureGetTexture(frame.chroma)
+		else { throw MarketingScreenshot.CaptureError.noFrame }
+		// The CoreVideo wrappers keep the decoded surfaces alive until the GPU has read them.
+		defer { withExtendedLifetime(frame) {} }
+		let width = Int(frame.size.width.rounded()), height = Int(frame.size.height.rounded())
+		guard width > 0, height > 0 else { throw MarketingScreenshot.CaptureError.noFrame }
+		let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm,
+			width: width, height: height, mipmapped: false)
+		descriptor.usage = .renderTarget
+		descriptor.storageMode = .shared
+		guard let texture = device.makeTexture(descriptor: descriptor), let buffer = queue.makeCommandBuffer() else {
+			throw MarketingScreenshot.CaptureError.renderFailed
+		}
+		var uniforms = frame.uniforms
+		guard draw(luma: luma, chroma: chroma, uniforms: &uniforms, to: texture, in: buffer) else {
+			throw MarketingScreenshot.CaptureError.renderFailed
+		}
+		try await withCheckedThrowingContinuation { (completion: CheckedContinuation<Void, Error>) in
+			buffer.addCompletedHandler { finished in
+				if finished.status == .completed { completion.resume() }
+				else { completion.resume(throwing: finished.error ?? MarketingScreenshot.CaptureError.renderFailed) }
+			}
+			buffer.commit()
+		}
+		try Task.checkCancellation()
+
+		let rowBytes = width * 4
+		var pixels = Data(count: height * rowBytes)
+		pixels.withUnsafeMutableBytes { bytes in
+			texture.getBytes(bytes.baseAddress!, bytesPerRow: rowBytes,
+				from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+		}
+		let bitmapInfo = CGBitmapInfo.byteOrder32Little.union(CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue))
+		let profile = uniforms.transferMode == 3 ? CGColorSpace.sRGB : CGColorSpace.itur_709
+		guard let colourSpace = CGColorSpace(name: profile),
+			let provider = CGDataProvider(data: pixels as CFData),
+			let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+				bytesPerRow: rowBytes, space: colourSpace, bitmapInfo: bitmapInfo, provider: provider,
+				decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+		else { throw MarketingScreenshot.CaptureError.renderFailed }
+		return image
 	}
 
 	func setDrawableSize(_ size: CGSize) {
@@ -381,7 +438,7 @@ final class MetalRenderer {
 				{
 					generator.interpolate(
 						previous: (prevLuma, prevChroma), current: (lumaTex, chromaTex), into: commandBuffer)
-					draw(luma: outLuma, chroma: outChroma, uniforms: &uniforms, to: drawable, in: commandBuffer)
+					draw(luma: outLuma, chroma: outChroma, uniforms: &uniforms, to: drawable.texture, in: commandBuffer)
 					commandBuffer.addCompletedHandler { [weak self] buffer in
 						_ = (previous, luma, chroma)
 						let ms = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
@@ -426,7 +483,7 @@ final class MetalRenderer {
 			commandBuffer.commit()
 			return
 		}
-		draw(luma: lumaTex, chroma: chromaTex, uniforms: &uniforms, to: drawable, in: commandBuffer)
+		draw(luma: lumaTex, chroma: chromaTex, uniforms: &uniforms, to: drawable.texture, in: commandBuffer)
 		track(drawable, in: commandBuffer, captureSeq: realSeq, capture: capture)
 		#if targetEnvironment(simulator)
 		// The simulator has no paced presentation, so the real frame just follows the generated one
@@ -440,6 +497,12 @@ final class MetalRenderer {
 		}
 		#endif
 		commandBuffer.commit()
+		// Export HDR frames through the PNG-specific sRGB tone and gamut mapping path.
+		uniforms.transferMode = framePQ ? 3 : 0
+		lock.withLock {
+			screenshotFrame = ScreenshotFrame(luma: luma, chroma: chroma, uniforms: uniforms,
+				size: CGSize(width: drawable.texture.width, height: drawable.texture.height))
+		}
 		presentedFrames += 1
 	}
 
@@ -486,20 +549,21 @@ final class MetalRenderer {
 		return picked
 	}
 
+	@discardableResult
 	private func draw(
-		luma: MTLTexture, chroma: MTLTexture, uniforms: inout RenderUniforms, to drawable: CAMetalDrawable,
+		luma: MTLTexture, chroma: MTLTexture, uniforms: inout RenderUniforms, to texture: MTLTexture,
 		in commandBuffer: MTLCommandBuffer
-	) {
+	) -> Bool {
 		// The layer's pixel format can lag a settings change by a frame
-		let pipeline = drawable.texture.pixelFormat == .bgr10a2Unorm ? pipelineHDR : pipelineSDR
+		let pipeline = texture.pixelFormat == .bgr10a2Unorm ? pipelineHDR : pipelineSDR
 
 		let pass = MTLRenderPassDescriptor()
-		pass.colorAttachments[0].texture = drawable.texture
+		pass.colorAttachments[0].texture = texture
 		pass.colorAttachments[0].loadAction = .clear
 		pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
 		pass.colorAttachments[0].storeAction = .store
 
-		guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+		guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
 		encoder.setRenderPipelineState(pipeline)
 		encoder.setVertexBytes(&uniforms, length: MemoryLayout<RenderUniforms>.stride, index: 0)
 		encoder.setFragmentBytes(&uniforms, length: MemoryLayout<RenderUniforms>.stride, index: 0)
@@ -507,6 +571,7 @@ final class MetalRenderer {
 		encoder.setFragmentTexture(chroma, index: 1)
 		encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
 		encoder.endEncoding()
+		return true
 	}
 
 	/// Counts the drawable as in flight until it reaches the screen (or is dropped).
@@ -543,11 +608,9 @@ final class MetalRenderer {
 	}
 }
 
-/// UIView backed by a CAMetalLayer at the screen's native pixel density.
-/// Routes screen touches to the stream shortcuts, touchpad, or virtual controller.
+/// Hosts a CAMetalLayer at the screen's native pixel density and routes screen touches.
 final class StreamMetalView: UIView {
-	override class var layerClass: AnyClass { CAMetalLayer.self }
-	var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
+	private let metalLayer = CAMetalLayer()
 
 	let renderer: MetalRenderer
 
@@ -597,8 +660,24 @@ final class StreamMetalView: UIView {
 		backgroundColor = .black
 		isMultipleTouchEnabled = true
 		controls.isHidden = true
+		layer.addSublayer(metalLayer)
 		addSubview(controls)
 		renderer.attach(metalLayer)
+	}
+
+	/// UIKit cannot reliably snapshot Metal. Substitute a still frame under the existing controls.
+	func withScreenshotVideo<T>(_ image: CGImage, capture: () throws -> T) rethrows -> T {
+		let still = UIImageView(image: UIImage(cgImage: image))
+		still.contentMode = .scaleToFill
+		still.frame = bounds
+		still.isUserInteractionEnabled = false
+		insertSubview(still, belowSubview: controls)
+		metalLayer.isHidden = true
+		defer {
+			metalLayer.isHidden = false
+			still.removeFromSuperview()
+		}
+		return try capture()
 	}
 
 	@available(*, unavailable)
@@ -639,8 +718,13 @@ final class StreamMetalView: UIView {
 		// Native scale: render at the panel's real resolution, not the UIKit point scale
 		let scale = window?.screen.nativeScale ?? UIScreen.main.nativeScale
 		contentScaleFactor = scale
+		CATransaction.begin()
+		CATransaction.setDisableActions(true)
+		metalLayer.frame = bounds
 		metalLayer.contentsScale = scale
-		renderer.setDrawableSize(CGSize(width: bounds.width * scale, height: bounds.height * scale))
+		let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+		renderer.setDrawableSize(size)
+		CATransaction.commit()
 		let area = bounds.inset(by: safeAreaInsets)
 		let buttonY = bottomSystemButtonY(in: area)
 		if controls.frame != bounds || controlsArea != area || systemButtonY != buttonY {

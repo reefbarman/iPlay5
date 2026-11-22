@@ -116,6 +116,20 @@ fragment float4 stream_fragment(VertexOut in [[stage_in]],
 		float3 v = nits / 203.0;
 		v = v / (1.0 + v * 0.25);
 		rgb = pow(saturate(v), 1.0 / 2.4);
+	} else if (u.transferMode == 3) {
+		// HDR screenshot to SDR PNG: roll off highlights by luminance and map
+		// the linear BT.2020 primaries to sRGB (the same primaries as BT.709).
+		float3 linear = pq_to_linear(rgb) * (10000.0 / 203.0);
+		float luminance = dot(linear, float3(0.2627, 0.6780, 0.0593));
+		if (luminance > 0.65) {
+			float mapped = 1.0 - 0.35 * exp((0.65 - luminance) / 0.35);
+			linear *= mapped / luminance;
+		}
+		const float3x3 bt2020_to_709 = float3x3(float3( 1.6605, -0.1246, -0.0182),
+		                                        float3(-0.5876,  1.1329, -0.1006),
+		                                        float3(-0.0728, -0.0083,  1.1187));
+		linear = saturate(bt2020_to_709 * linear);
+		rgb = select(1.055 * pow(linear, 1.0 / 2.4) - 0.055, 12.92 * linear, linear <= 0.0031308);
 	}
 
 	return float4(rgb, 1.0);

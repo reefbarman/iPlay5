@@ -10,6 +10,11 @@ struct StreamView: View {
 	@Environment(\.scenePhase) private var scenePhase
 	@State private var session: StreamSession?
 	@State private var showMenu = false
+	@State private var marketingScreenshotMode = false
+	@State private var screenshotRequested = false
+	@State private var isSavingScreenshot = false
+	@State private var screenshotMessage: String?
+	@State private var showScreenshotResult = false
 	@State private var showMenuButton = false
 	@State private var hideMenuButton: Task<Void, Never>?
 	@State private var folded = false
@@ -37,20 +42,23 @@ struct StreamView: View {
 	private var needsController: Bool { !hasController && sessionControlsMode == nil }
 
 	private var wantsVirtualControls: Bool {
-		switch sessionControlsMode ?? settingsStore.settings.virtualControls {
+		if marketingScreenshotMode { return true }
+		return switch sessionControlsMode ?? settingsStore.settings.virtualControls {
 		case .auto: !hasController && autoShowsControls
 		case .always: true
 		case .never: false
 		}
 	}
 
-	private var acceptsScreenInput: Bool {
+	private var canCaptureStream: Bool {
 		guard let session else { return false }
 		return session.state == .streaming && !session.goingToSleep && session.keyboardText == nil
-			&& !folded && !portrait && !showMenu && scenePhase == .active
+			&& !folded && !portrait && scenePhase == .active
 	}
 
+	private var acceptsScreenInput: Bool { canCaptureStream && !showMenu }
 	private var showsVirtualControls: Bool { acceptsScreenInput && wantsVirtualControls }
+	private var pinsStreamButtons: Bool { marketingScreenshotMode && acceptsScreenInput }
 
 	var body: some View {
 		GeometryReader { geo in
@@ -101,7 +109,20 @@ struct StreamView: View {
 			if phase == .active { refreshControllerPresence() }
 			else { session?.setPaused(true) }
 		}
-		.sheet(isPresented: $showMenu) { menu }
+		.sheet(isPresented: $showMenu, onDismiss: {
+			guard screenshotRequested else { return }
+			screenshotRequested = false
+			isSavingScreenshot = true
+		}) { menu }
+		.task(id: isSavingScreenshot) {
+			guard isSavingScreenshot else { return }
+			await saveMarketingScreenshot()
+		}
+		.alert("Marketing Screenshot", isPresented: $showScreenshotResult) {
+			Button("OK", role: .cancel) {}
+		} message: {
+			Text(screenshotMessage ?? "")
+		}
 	}
 
 	private var content: some View {
@@ -115,7 +136,7 @@ struct StreamView: View {
 					acceptsInput: acceptsScreenInput,
 					virtualControls: showsVirtualControls,
 					videoAspectForLetterbox: letterboxAspect(for: session),
-					onFrameGenerationTap: { activateFrameGenerationShortcut(session) },
+					onFrameGenerationTap: { activateFrameGenerationShortcut(session, pinned: pinsStreamButtons) },
 					onVirtualPad: { [weak session] in session?.setVirtualPad($0) },
 					onReset: { [weak session] in session?.resetScreenInput() },
 					onTouch: { [weak session] in session?.screenTouch($0) },
@@ -130,23 +151,23 @@ struct StreamView: View {
 				overlay(for: session)
 			}
 
-			if showSettingsHint && !showMenuButton {
+			if showSettingsHint && !showMenuButton && !marketingScreenshotMode {
 				settingsHint
 					.transition(.opacity)
 			}
 
-			if showMenuButton {
+			if showMenuButton || pinsStreamButtons {
 				menuButton
 					.transition(.opacity)
 			}
 
-			if showPSButton && acceptsScreenInput {
+			if (showPSButton || pinsStreamButtons) && acceptsScreenInput {
 				psButton
 					.transition(.opacity)
 			}
 
 			if let session, acceptsScreenInput {
-				frameGenButton(session, compact: showsVirtualControls)
+				frameGenButton(session, compact: showsVirtualControls, pinned: pinsStreamButtons)
 				if session.settings.frameCapture {
 					captureButton(session, compact: showsVirtualControls)
 				}
@@ -205,7 +226,9 @@ struct StreamView: View {
 		if let orientation = interfaceOrientation {
 			session.input.interfaceOrientation = orientation
 		}
-		session.input.onMenuCombo = { showMenu = true }
+		session.input.onMenuCombo = {
+			if !isSavingScreenshot { showMenu = true }
+		}
 		let store = consoleStore, id = console.id
 		session.latestConsole = { store.consoles.first { $0.id == id } }
 		self.session = session
@@ -360,39 +383,43 @@ struct StreamView: View {
 		let on = settingsStore.settings.frameGeneration
 		let visible = pinned || showFGButton
 		let (text, colour): (String, Color) = on ? ("FG on", .green.opacity(0.85)) : ("FG off", .black.opacity(0.45))
-		return Button {
-			activateFrameGenerationShortcut(session, pinned: pinned)
-		} label: {
-			Text(text)
-				.font(.caption.weight(.bold))
-				.foregroundStyle(.white)
-				.padding(.horizontal, 10)
-				.frame(minWidth: 52, minHeight: 30)
-				.background(colour, in: Capsule())
-				.overlay(alignment: .leading) {
-					if showSettingsHint && showFGButton && !pinned {
-						HStack(spacing: 10) {
-							hintLabel("Tap here for frame generation")
-							Image(systemName: "arrow.right")
-								.font(.title3.weight(.bold))
-								.accessibilityHidden(true)
-						}
-						.foregroundStyle(.white)
-						.fixedSize()
-						.alignmentGuide(.leading) { $0[.trailing] + 10 }
-						.allowsHitTesting(false)
-						.transition(.opacity)
-					}
+		let badge = Text(text)
+			.font(.caption.weight(.bold))
+			.foregroundStyle(.white)
+			.padding(.horizontal, 10)
+			.frame(minWidth: 52, minHeight: 30)
+			.background(colour, in: Capsule())
+			.fixedSize()
+		return ZStack(alignment: .bottomTrailing) {
+			Button {
+				activateFrameGenerationShortcut(session, pinned: pinned)
+			} label: {
+				badge.opacity(visible ? 1 : 0)
+					.padding(.bottom, 12)
+					.padding(.trailing, 16)
+					.frame(width: compact ? 84 : StreamMetalView.frameGenerationCornerSize.width,
+						height: compact ? 54 : StreamMetalView.frameGenerationCornerSize.height, alignment: .bottomTrailing)
+					.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.accessibilityLabel("Frame generation \(on ? "on" : "off"). Tap to turn it \(on ? "off" : "on").")
+
+			if showSettingsHint && showFGButton && !pinned {
+				// Lay out the hint beside a placeholder the same size as the actual badge.
+				HStack(spacing: 10) {
+					hintLabel("Tap here for frame generation")
+					Image(systemName: "arrow.right")
+						.font(.title3.weight(.bold))
+						.accessibilityHidden(true)
+					badge.hidden()
 				}
-				.opacity(visible ? 1 : 0)
+				.foregroundStyle(.white)
+				.padding(.horizontal, 16)
 				.padding(.bottom, 12)
-				.padding(.trailing, 16)
-				.frame(width: compact ? 84 : StreamMetalView.frameGenerationCornerSize.width,
-					height: compact ? 54 : StreamMetalView.frameGenerationCornerSize.height, alignment: .bottomTrailing)
-				.contentShape(Rectangle())
+				.allowsHitTesting(false)
+				.transition(.opacity)
+			}
 		}
-		.buttonStyle(.plain)
-		.accessibilityLabel("Frame generation \(on ? "on" : "off"). Tap to turn it \(on ? "off" : "on").")
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
 		.ignoresSafeArea()
 	}
@@ -487,6 +514,7 @@ struct StreamView: View {
 
 	private var menuButton: some View {
 		Button {
+			guard !isSavingScreenshot else { return }
 			hideMenuButton?.cancel()
 			showMenuButton = false
 			showMenu = true
@@ -522,7 +550,7 @@ struct StreamView: View {
 			.padding(24)
 			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
 		case .streaming:
-			if session.settings.showStats {
+			if session.settings.showStats && !marketingScreenshotMode {
 				StatsOverlay(stats: session.stats, settings: session.settings)
 					.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 					.padding(12)
@@ -696,11 +724,43 @@ struct StreamView: View {
 					}
 				}
 				StreamSettingsForm(settings: $store.settings)
+				Section {
+					Toggle("Marketing screenshot mode", isOn: $marketingScreenshotMode)
+					Button {
+						marketingScreenshotMode = true
+						screenshotRequested = true
+						showMenu = false
+					} label: {
+						Label("Save screenshot", systemImage: "camera")
+					}
+					.disabled(!canCaptureStream || isSavingScreenshot)
+				} footer: {
+					Text("Screenshot mode keeps virtual controls and shortcuts visible while you frame the shot. Save screenshot saves a PNG to Files › On My iPhone › iPlay5, then returns the controls to normal.")
+				}
 			}
 			.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)
 		}
 		.onChange(of: store.settings) { _, new in session?.apply(new) }
+	}
+
+	private func saveMarketingScreenshot() async {
+		defer {
+			marketingScreenshotMode = false
+			isSavingScreenshot = false
+		}
+		do {
+			guard canCaptureStream, !showMenu, let renderer = session?.renderer else {
+				throw MarketingScreenshot.CaptureError.streamUnavailable
+			}
+			let filename = try await MarketingScreenshot.save(renderer: renderer)
+			guard !Task.isCancelled else { return }
+			screenshotMessage = "Saved \(filename) to Files › On My iPhone › iPlay5."
+		} catch {
+			guard !Task.isCancelled else { return }
+			screenshotMessage = "Couldn't save the screenshot. \(error.localizedDescription)"
+		}
+		showScreenshotResult = true
 	}
 }
 
