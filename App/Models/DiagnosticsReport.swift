@@ -1,23 +1,15 @@
-import CoreTransferable
 import GameController
 import OSLog
 import UIKit
-import UniformTypeIdentifiers
 
 /// A plain-text report people can attach to a GitHub issue: app, phone and
 /// screen details, settings, and the app's logs since it was opened. IP and MAC
 /// addresses, keys, account IDs and console names are taken out before sharing.
-struct DiagnosticsReport: Transferable {
+struct DiagnosticsReport {
 	let consoleNames: [String]
 	let settings: StreamSettings
 
-	static var transferRepresentation: some TransferRepresentation {
-		FileRepresentation(exportedContentType: .plainText) { report in
-			SentTransferredFile(try await report.writeFile())
-		}
-	}
-
-	private func writeFile() async throws -> URL {
+	func writeFile() async throws -> URL {
 		let summary = await MainActor.run { Self.summary(consoleCount: consoleNames.count, settings: settings) }
 		let logs = (try? Self.logLines()) ?? ["(couldn't read the app's logs)"]
 		let text = redact(summary + "\n\n== Log since the app was opened ==\n" + logs.joined(separator: "\n") + "\n")

@@ -89,6 +89,9 @@ struct SettingsView: View {
 	@Environment(SettingsStore.self) private var store
 	@Environment(ConsoleStore.self) private var consoles
 	@Environment(\.dismiss) private var dismiss
+	@State private var isPreparingDiagnostics = false
+	@State private var diagnosticsShare: DiagnosticsShare?
+	@State private var showDiagnosticsError = false
 
 	var body: some View {
 		@Bindable var store = store
@@ -97,12 +100,16 @@ struct SettingsView: View {
 				StreamSettingsForm(settings: $store.settings)
 
 				Section {
-					ShareLink(
-						item: DiagnosticsReport(consoleNames: consoles.consoles.map(\.name), settings: store.settings),
-						preview: SharePreview("iPlay5 diagnostics")
-					) {
-						Label("Share diagnostics", systemImage: "ladybug")
+					Button {
+						isPreparingDiagnostics = true
+					} label: {
+						if isPreparingDiagnostics {
+							ProgressView("Preparing diagnostics…")
+						} else {
+							Label("Share diagnostics", systemImage: "ladybug")
+						}
 					}
+					.disabled(isPreparingDiagnostics || diagnosticsShare != nil)
 					Link(destination: URL(string: "https://github.com/reefbarman/iPlay5/issues/new")!) {
 						Label("Report a problem on GitHub", systemImage: "exclamationmark.bubble")
 					}
@@ -117,6 +124,42 @@ struct SettingsView: View {
 			.toolbar {
 				ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
 			}
+			.task(id: isPreparingDiagnostics) {
+				guard isPreparingDiagnostics else { return }
+				await prepareDiagnostics()
+			}
+			.sheet(item: $diagnosticsShare) { share in
+				share
+			}
+			.alert("Couldn't prepare diagnostics", isPresented: $showDiagnosticsError) {
+				Button("OK", role: .cancel) {}
+			} message: {
+				Text("Try sharing diagnostics again.")
+			}
 		}
 	}
+
+	private func prepareDiagnostics() async {
+		let report = DiagnosticsReport(consoleNames: consoles.consoles.map(\.name), settings: store.settings)
+		do {
+			let url = try await report.writeFile()
+			guard !Task.isCancelled else { return }
+			diagnosticsShare = DiagnosticsShare(url: url)
+		} catch {
+			guard !Task.isCancelled else { return }
+			showDiagnosticsError = true
+		}
+		isPreparingDiagnostics = false
+	}
+}
+
+private struct DiagnosticsShare: UIViewControllerRepresentable, Identifiable {
+	let url: URL
+	var id: URL { url }
+
+	func makeUIViewController(context: Context) -> UIActivityViewController {
+		UIActivityViewController(activityItems: [url], applicationActivities: nil)
+	}
+
+	func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
