@@ -544,8 +544,7 @@ final class MetalRenderer {
 }
 
 /// UIView backed by a CAMetalLayer at the screen's native pixel density.
-/// Touches act as the DualSense touchpad, except the top-right corner which
-/// reveals the stream menu button.
+/// Routes screen touches to the stream shortcuts, touchpad, or virtual controller.
 final class StreamMetalView: UIView {
 	override class var layerClass: AnyClass { CAMetalLayer.self }
 	var metalLayer: CAMetalLayer { layer as! CAMetalLayer }
@@ -560,6 +559,11 @@ final class StreamMetalView: UIView {
 	var onCornerTap: (() -> Void)?
 	/// Top-left hot corner (PS button)
 	var onLeftCornerTap: (() -> Void)?
+	var onVirtualPad: ((VirtualPadState) -> Void)?
+	var onReset: (() -> Void)?
+	private var acceptsInput = false
+	private let controls = VirtualControlsOverlay(frame: .zero)
+	private var controlsArea = CGRect.null
 
 	/// Hot corner size in points, at the top-right and top-left of the view
 	static let cornerSize = CGSize(width: 140, height: 90)
@@ -585,6 +589,8 @@ final class StreamMetalView: UIView {
 		super.init(frame: .zero)
 		backgroundColor = .black
 		isMultipleTouchEnabled = true
+		controls.isHidden = true
+		addSubview(controls)
 		renderer.attach(metalLayer)
 	}
 
@@ -595,6 +601,7 @@ final class StreamMetalView: UIView {
 
 	override func didMoveToWindow() {
 		super.didMoveToWindow()
+		if window == nil { resetTouches() }
 		updateDisplayLink()
 	}
 
@@ -627,12 +634,39 @@ final class StreamMetalView: UIView {
 		contentScaleFactor = scale
 		metalLayer.contentsScale = scale
 		renderer.setDrawableSize(CGSize(width: bounds.width * scale, height: bounds.height * scale))
+		let area = bounds.inset(by: safeAreaInsets)
+		if controls.frame != bounds || controlsArea != area {
+			resetTouches()
+			controlsArea = area
+			controls.frame = bounds
+			controls.setLayout(in: area)
+		}
+	}
+
+	override func safeAreaInsetsDidChange() {
+		super.safeAreaInsetsDidChange()
+		setNeedsLayout()
+	}
+
+	func setInputMode(acceptsInput: Bool, virtualControls: Bool) {
+		let hideControls = !acceptsInput || !virtualControls
+		guard self.acceptsInput != acceptsInput || controls.isHidden != hideControls else { return }
+		resetTouches()
+		self.acceptsInput = acceptsInput
+		controls.isHidden = hideControls
+	}
+
+	private func resetTouches() {
+		tracked.removeAll()
+		controls.reset()
+		onReset?()
 	}
 
 	// MARK: Touchpad
 
 	private var cornerRect: CGRect {
-		CGRect(x: bounds.maxX - Self.cornerSize.width, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
+		let size = controls.isHidden ? Self.cornerSize : CGSize(width: 84, height: 52)
+		return CGRect(x: bounds.maxX - size.width, y: bounds.minY, width: size.width, height: size.height)
 	}
 
 	private var leftCornerRect: CGRect {
@@ -640,26 +674,33 @@ final class StreamMetalView: UIView {
 	}
 
 	private func touchpadPoint(_ p: CGPoint) -> (UInt16, UInt16) {
-		guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
-		let nx = min(max(p.x / bounds.width, 0), 1)
-		let ny = min(max(p.y / bounds.height, 0), 1)
+		let area = controls.isHidden ? bounds : controls.touchpadRect
+		guard area.width > 0, area.height > 0 else { return (0, 0) }
+		let nx = min(max((p.x - area.minX) / area.width, 0), 1)
+		let ny = min(max((p.y - area.minY) / area.height, 0), 1)
 		return (UInt16((nx * 1919).rounded()), UInt16((ny * 1079).rounded()))
 	}
 
 	override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+		guard acceptsInput else { return }
 		for touch in touches {
 			let p = touch.location(in: self)
 			if cornerRect.contains(p) {
 				onCornerTap?()
 				continue
 			}
-			if leftCornerRect.contains(p) {
+			if controls.isHidden, leftCornerRect.contains(p) {
 				onLeftCornerTap?()
+				continue
+			}
+			if !controls.isHidden, !controls.touchpadRect.contains(p) {
+				if let state = controls.begin(ObjectIdentifier(touch), at: p) { onVirtualPad?(state) }
 				continue
 			}
 			let used = Set(tracked.values.map(\.slot))
 			guard let slot = [10, 11].first(where: { !used.contains($0) }) else { continue }
 			tracked[ObjectIdentifier(touch)] = Tracked(slot: slot, start: p, time: touch.timestamp)
+			if !controls.isHidden { controls.setTouchpadPressed(true) }
 			let (x, y) = touchpadPoint(p)
 			onTouch?(.down(slot: slot, x: x, y: y))
 		}
@@ -668,8 +709,11 @@ final class StreamMetalView: UIView {
 	override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
 		for touch in touches {
 			let key = ObjectIdentifier(touch)
-			guard var t = tracked[key] else { continue }
 			let p = touch.location(in: self)
+			guard var t = tracked[key] else {
+				if let state = controls.move(key, to: p) { onVirtualPad?(state) }
+				continue
+			}
 			if !t.moved, hypot(p.x - t.start.x, p.y - t.start.y) > Self.tapMaxMovement {
 				t.moved = true
 				tracked[key] = t
@@ -680,20 +724,28 @@ final class StreamMetalView: UIView {
 	}
 
 	override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+		finishTouches(touches, allowsTap: true)
+	}
+
+	override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+		finishTouches(touches, allowsTap: false)
+	}
+
+	private func finishTouches(_ touches: Set<UITouch>, allowsTap: Bool) {
 		for touch in touches {
-			guard let t = tracked.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-			if !t.moved, touch.timestamp - t.time <= Self.tapMaxDuration {
+			let key = ObjectIdentifier(touch)
+			guard let t = tracked.removeValue(forKey: key) else {
+				if let state = controls.end(key) { onVirtualPad?(state) }
+				continue
+			}
+			let point = touch.location(in: self)
+			if allowsTap, !t.moved, hypot(point.x - t.start.x, point.y - t.start.y) <= Self.tapMaxMovement,
+			   touch.timestamp - t.time <= Self.tapMaxDuration {
 				onTap?(t.slot)
 			} else {
 				onTouch?(.up(slot: t.slot))
 			}
 		}
-	}
-
-	override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-		for touch in touches {
-			guard let t = tracked.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-			onTouch?(.up(slot: t.slot))
-		}
+		controls.setTouchpadPressed(!controls.isHidden && !tracked.isEmpty)
 	}
 }

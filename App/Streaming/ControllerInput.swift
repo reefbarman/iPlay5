@@ -60,6 +60,7 @@ final class ControllerInput {
 		observers.forEach(NotificationCenter.default.removeObserver)
 		observers.removeAll()
 		comboTimer?.invalidate()
+		comboTimer = nil
 		motionManager.stopDeviceMotionUpdates()
 		if let controller {
 			restoreSystemGestures(controller)
@@ -68,32 +69,52 @@ final class ControllerInput {
 			controller.motion?.sensorsActive = false
 		}
 		controller = nil
+		controllerName = nil
+		lastPad = CKPadState()
+		releaseTouchpad()
 		rumble.detach()
 	}
 
 	// MARK: - Controller selection
 
+	private static var candidates: [GCController] {
+		GCController.controllers().filter { $0.extendedGamepad != nil }
+	}
+
+	static var hasSupportedController: Bool { !candidates.isEmpty }
+
 	private func pickController() {
-		let candidates = GCController.controllers().filter { $0.extendedGamepad != nil }
+		let candidates = Self.candidates
 		let next = GCController.current.flatMap { candidates.contains($0) ? $0 : nil } ?? candidates.first
-		guard next !== controller else { return }
+		guard next !== controller else {
+			if next == nil { startPhoneMotion() }
+			return
+		}
 
 		if let controller {
 			restoreSystemGestures(controller)
 			controller.extendedGamepad?.valueChangedHandler = nil
 			controller.motion?.valueChangedHandler = nil
+			controller.motion?.sensorsActive = false
+			updateMenuCombo(select: false, start: false)
+			releaseTouchpad()
 		}
 		controller = next
 		controllerName = next?.vendorName
 		rumble.attach(next)
 		guard let next, let pad = next.extendedGamepad else {
+			lastPad = CKPadState()
+			onPad?(lastPad)
 			startPhoneMotion()
 			return
 		}
 		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public))")
 
 		claimSystemGestures(next)
-		pad.valueChangedHandler = { [weak self] pad, _ in self?.padChanged(pad) }
+		pad.valueChangedHandler = { [weak self] pad, _ in
+			guard let self, self.controller?.extendedGamepad === pad else { return }
+			self.padChanged(pad)
+		}
 
 		if let motion = next.motion, motion.hasRotationRate {
 			motionManager.stopDeviceMotionUpdates()
@@ -179,6 +200,13 @@ final class ControllerInput {
 	}
 
 	// MARK: - DualSense touchpad
+
+	private func releaseTouchpad() {
+		for slot in touchDown.indices where touchDown[slot] {
+			touchDown[slot] = false
+			onTouch?(.up(slot: slot))
+		}
+	}
 
 	private func dualSenseTouch(_ ds: GCDualSenseGamepad) {
 		for (slot, pad) in [ds.touchpadPrimary, ds.touchpadSecondary].enumerated() {

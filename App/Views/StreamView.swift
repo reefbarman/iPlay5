@@ -19,8 +19,10 @@ struct StreamView: View {
 	/// to turn the phone. Once a stream is landscape, AppDelegate locks it there.
 	@State private var portrait = false
 	@State private var windowSize: CGSize = .zero
-	/// No controller connected yet; we ask before connecting (there are no on-screen controls)
-	@State private var needsController = !Self.hasController
+	@State private var hasController = ControllerInput.hasSupportedController
+	@State private var autoShowsControls = !ControllerInput.hasSupportedController
+	/// The connect prompt choice lasts across reconnects, not across play screens.
+	@State private var sessionControlsMode: VirtualControlsMode?
 	@State private var showSettingsHint = false
 	@State private var showPSButton = false
 	@State private var hidePSButton: Task<Void, Never>?
@@ -32,9 +34,23 @@ struct StreamView: View {
 	/// The corner hints show once per stream screen, not again after a reconnect
 	@State private var hintShown = false
 
-	private static var hasController: Bool {
-		GCController.controllers().contains { $0.extendedGamepad != nil }
+	private var needsController: Bool { !hasController && sessionControlsMode == nil }
+
+	private var wantsVirtualControls: Bool {
+		switch sessionControlsMode ?? settingsStore.settings.virtualControls {
+		case .auto: !hasController && autoShowsControls
+		case .always: true
+		case .never: false
+		}
 	}
+
+	private var acceptsScreenInput: Bool {
+		guard let session else { return false }
+		return session.state == .streaming && !session.goingToSleep && session.keyboardText == nil
+			&& !folded && !portrait && !showMenu && scenePhase == .active
+	}
+
+	private var showsVirtualControls: Bool { acceptsScreenInput && wantsVirtualControls }
 
 	var body: some View {
 		GeometryReader { geo in
@@ -49,23 +65,30 @@ struct StreamView: View {
 		.persistentSystemOverlays(.hidden)
 		.defersSystemGestures(on: .all)
 		// The session itself starts from updateFolded, once we know we're on a usable screen
-		.onAppear { AppDelegate.setStreaming(true) }
+		.onAppear {
+			AppDelegate.setStreaming(true)
+			refreshControllerPresence()
+		}
 		.onDisappear(perform: stop)
 		.onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
 			// A flip between the two landscapes keeps the same window size, so pick
 			// up iOS's new orientation (for controller motion) once it has rotated
 			DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { update() }
 		}
-		.onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in
-			guard needsController, Self.hasController else { return }
-			needsController = false
-			update()
+		.onReceive(NotificationCenter.default.publisher(for: .GCControllerDidConnect)) { _ in refreshControllerPresence() }
+		.onReceive(NotificationCenter.default.publisher(for: .GCControllerDidDisconnect)) { _ in refreshControllerPresence() }
+		.task(id: hasController) {
+			guard !hasController, !autoShowsControls else { return }
+			try? await Task.sleep(for: .seconds(1))
+			guard !Task.isCancelled, !hasController else { return }
+			autoShowsControls = true
 		}
+		.onChange(of: settingsStore.settings.virtualControls) { _, _ in sessionControlsMode = nil }
 		.onChange(of: session?.state == .streaming) { _, streaming in
 			guard streaming, !hintShown else { return }
 			hintShown = true
 			flashSettingsHint()
-			revealFGButton()
+			if !wantsVirtualControls { revealFGButton() }
 		}
 		// Rest mode worked: straight back to the console list, no Reconnect screen
 		.onChange(of: session?.state == .consoleAsleep) { _, asleep in
@@ -75,7 +98,8 @@ struct StreamView: View {
 			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
 		}
 		.onChange(of: scenePhase) { _, phase in
-			session?.setPaused(phase != .active || folded || portrait)
+			if phase == .active { refreshControllerPresence() }
+			else { session?.setPaused(true) }
 		}
 		.sheet(isPresented: $showMenu) { menu }
 	}
@@ -88,6 +112,10 @@ struct StreamView: View {
 				MetalStreamView(
 					renderer: renderer,
 					highRefresh: session.settings.highRefreshDisplay,
+					acceptsInput: acceptsScreenInput,
+					virtualControls: showsVirtualControls,
+					onVirtualPad: { [weak session] in session?.setVirtualPad($0) },
+					onReset: { [weak session] in session?.resetScreenInput() },
 					onTouch: { [weak session] in session?.screenTouch($0) },
 					onTap: { [weak session] in session?.screenTap(slot: $0) },
 					onCornerTap: revealMenuButton,
@@ -110,12 +138,13 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
-			if showPSButton {
+			if showPSButton && acceptsScreenInput && !showsVirtualControls {
 				psButton
 					.transition(.opacity)
 			}
 
-			if let session, session.state == .streaming, !folded, !portrait {
+			// The transparent frame-generation hotspot would otherwise swallow gameplay touches.
+			if let session, acceptsScreenInput, !showsVirtualControls {
 				frameGenButton(session)
 				if session.settings.frameCapture {
 					captureButton(session)
@@ -158,6 +187,18 @@ struct StreamView: View {
 
 	// MARK: - Lifecycle
 
+	private func refreshControllerPresence() {
+		hasController = ControllerInput.hasSupportedController
+		if hasController { autoShowsControls = false }
+		update()
+	}
+
+	private func continueWithoutPhysicalController(_ mode: VirtualControlsMode) {
+		sessionControlsMode = mode
+		if mode == .auto { autoShowsControls = true }
+		update()
+	}
+
 	private func startSession() {
 		let session = StreamSession(console: console, settings: settingsStore.settings)
 		if let orientation = interfaceOrientation {
@@ -194,7 +235,7 @@ struct StreamView: View {
 		portrait = !isFolded && size.height > size.width
 		let canPlay = !isFolded && !portrait
 		guard session != nil else {
-			if canPlay && !needsController { startSession() }
+			if canPlay && !needsController && scenePhase == .active { startSession() }
 			return
 		}
 		session?.setPaused(!canPlay || scenePhase != .active)
@@ -260,7 +301,7 @@ struct StreamView: View {
 
 	private var settingsHint: some View {
 		HStack(alignment: .top) {
-			if !showPSButton {
+			if !showPSButton && !wantsVirtualControls {
 				HStack(spacing: 10) {
 					hintIcon("playstation.logo")
 					Image(systemName: "arrow.left")
@@ -520,23 +561,26 @@ struct StreamView: View {
 			Color.black.opacity(0.85).ignoresSafeArea()
 			VStack(spacing: 8) {
 				Image(systemName: "gamecontroller.fill").font(.largeTitle)
-				Text("Connect a controller").font(.title2.bold())
-				Text("iPlay5 has no on-screen controls. Turn on your controller or pair it in Settings › Bluetooth, and \(console.name) connects as soon as it's found.")
+				Text("No controller connected").font(.title2.bold())
+				Text("Turn on your controller or pair it in Settings › Bluetooth, and \(console.name) connects as soon as it's found. You can also play with virtual controls or connect without controls.")
 					.multilineTextAlignment(.center)
 					.foregroundStyle(.secondary)
 					.frame(maxWidth: 420)
-				HStack {
-					Button("Cancel") { dismiss() }.buttonStyle(.bordered)
-					Button("Connect anyway") {
-						needsController = false
-						update()
-					}
-					.buttonStyle(.bordered)
+				ViewThatFits {
+					HStack { controllerChoices }
+					VStack { controllerChoices }
 				}
 				.padding(.top, 8)
 			}
 			.padding(24)
 		}
+	}
+
+	@ViewBuilder
+	private var controllerChoices: some View {
+		Button("Use virtual controls") { continueWithoutPhysicalController(.auto) }.buttonStyle(.borderedProminent)
+		Button("Connect without controls") { continueWithoutPhysicalController(.never) }.buttonStyle(.bordered)
+		Button("Cancel", role: .cancel) { dismiss() }.buttonStyle(.bordered)
 	}
 
 	private var rotateOverlay: some View {
@@ -585,6 +629,11 @@ struct StreamView: View {
 			Form {
 				Section {
 					Button("Resume") { showMenu = false }
+				if wantsVirtualControls, let session, session.settings.frameCapture {
+					Button("Save the last few seconds of frames") { session.saveFrameCapture() }
+						.disabled(session.captureStatus == "Saving…")
+					if let status = session.captureStatus { Text(status).foregroundStyle(.secondary) }
+				}
 					Button("Put console in rest mode") {
 						session?.putConsoleToSleep()
 						showMenu = false
@@ -611,9 +660,15 @@ struct StreamView: View {
 				} header: {
 					Text("Phone")
 				}
-				StreamSettingsForm(settings: $store.settings)
+			if let sessionControlsMode, sessionControlsMode != store.settings.virtualControls {
+				Section {
+					LabeledContent("Virtual controls this session", value: sessionControlsMode.label)
+					Button("Use saved virtual controls setting") { self.sessionControlsMode = nil }
+				}
 			}
-			.navigationTitle(console.name)
+			StreamSettingsForm(settings: $store.settings)
+		}
+		.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)
 		}
 		.onChange(of: store.settings) { _, new in session?.apply(new) }
@@ -700,6 +755,10 @@ private struct KeyboardOverlay: View {
 private struct MetalStreamView: UIViewRepresentable {
 	let renderer: MetalRenderer
 	let highRefresh: Bool
+	let acceptsInput: Bool
+	let virtualControls: Bool
+	let onVirtualPad: (VirtualPadState) -> Void
+	let onReset: () -> Void
 	let onTouch: (ControllerInput.TouchEvent) -> Void
 	let onTap: (Int) -> Void
 	let onCornerTap: () -> Void
@@ -717,5 +776,8 @@ private struct MetalStreamView: UIViewRepresentable {
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap
 		uiView.onLeftCornerTap = onLeftCornerTap
+		uiView.onVirtualPad = onVirtualPad
+		uiView.onReset = onReset
+		uiView.setInputMode(acceptsInput: acceptsInput, virtualControls: virtualControls)
 	}
 }

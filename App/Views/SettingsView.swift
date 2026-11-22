@@ -49,13 +49,16 @@ struct StreamSettingsForm: View {
 		}
 
 		Section {
+			Picker("Virtual controls", selection: $settings.virtualControls) {
+				ForEach(VirtualControlsMode.allCases) { Text($0.label).tag($0) }
+			}
 			Toggle("Rumble", isOn: $settings.rumble)
 			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
 		} header: {
 			Text("Controller")
 		} footer: {
-			Text("Phone gyro is used when the controller has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
+			Text("Auto shows virtual controls when no supported controller is connected. Phone gyro works without a controller or with one that has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
 		}
 
 		Section {

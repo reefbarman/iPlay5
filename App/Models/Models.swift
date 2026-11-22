@@ -95,6 +95,19 @@ enum DisplayMode: String, Codable, CaseIterable, Identifiable {
 }
 
 
+enum VirtualControlsMode: String, Codable, CaseIterable, Identifiable {
+	case auto, always, never
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .auto: "Auto"
+		case .always: "Always show"
+		case .never: "Never show"
+		}
+	}
+}
+
 struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
 	var fps: Int = 60
@@ -109,6 +122,7 @@ struct StreamSettings: Codable, Equatable {
 	var rumble: Bool = true
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
+	var virtualControls: VirtualControlsMode = .auto
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
 	var highRefreshDisplay: Bool = true
 	/// Experimental: make an in-between frame for each pair of real ones (FrameGen.metal)
@@ -147,6 +161,7 @@ struct StreamSettings: Codable, Equatable {
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
+		virtualControls = (try? c.decodeIfPresent(VirtualControlsMode.self, forKey: .virtualControls)) ?? d.virtualControls
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 		if let on = try c.decodeIfPresent(Bool.self, forKey: .frameGeneration) {
 			frameGeneration = on

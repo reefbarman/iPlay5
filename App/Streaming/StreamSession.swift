@@ -111,9 +111,10 @@ final class StreamSession {
 	@ObservationIgnored private var lastRepeated = 0
 	@ObservationIgnored private var lostFrames: Int32 = 0
 	@ObservationIgnored private var touchIDs: [Int: Int32] = [:]
-	/// Latest controller state, so screen taps can add a touchpad click on top of it
-	@ObservationIgnored private var lastPad = CKPadState()
-	@ObservationIgnored private var extraButtons: UInt32 = 0
+	@ObservationIgnored private var physicalPad = CKPadState()
+	@ObservationIgnored private var virtualPad = VirtualPadState()
+	@ObservationIgnored private var touchpadClicks: [Int: DispatchWorkItem] = [:]
+	@ObservationIgnored private var psRelease: DispatchWorkItem?
 	@ObservationIgnored private var reconnectAttempt = 0
 	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
 	@ObservationIgnored private var sleepWork: DispatchWorkItem?
@@ -246,7 +247,7 @@ final class StreamSession {
 		input.phoneMotionEnabled = settings.phoneMotion
 		input.rumble.enabled = settings.rumble
 		input.onPad = { [weak self] pad in
-			self?.lastPad = pad
+			self?.physicalPad = pad
 			self?.sendPad()
 		}
 		input.onMotion = { [weak self] gyro, accel, ts in
@@ -454,6 +455,9 @@ final class StreamSession {
 		statsTimer?.invalidate()
 		statsTimer = nil
 		input.stop()
+		physicalPad = CKPadState()
+		resetScreenInput()
+		touchIDs.removeAll()
 		audio.stop()
 		if let handle {
 			// Stops and joins chiaki's threads: no callbacks after this
@@ -553,40 +557,68 @@ final class StreamSession {
 
 	private func sendPad() {
 		guard let handle else { return }
-		var pad = lastPad
-		pad.buttons |= extraButtons
+		var pad = physicalPad
+		pad.buttons |= virtualPad.buttons
+		if psRelease != nil { pad.buttons |= CK_BUTTON_PS.rawValue }
+		if !touchpadClicks.isEmpty { pad.buttons |= CK_BUTTON_TOUCHPAD.rawValue }
+		pad.l2 = max(pad.l2, virtualPad.l2)
+		pad.r2 = max(pad.r2, virtualPad.r2)
+		if let stick = virtualPad.leftStick { (pad.left_x, pad.left_y) = (stick.x, stick.y) }
+		if let stick = virtualPad.rightStick { (pad.right_x, pad.right_y) = (stick.x, stick.y) }
 		ck_session_set_pad(handle, &pad)
 	}
 
 	// MARK: - On-screen touchpad (main thread)
 
+	func setVirtualPad(_ pad: VirtualPadState) {
+		virtualPad = pad
+		sendPad()
+	}
+
+	func resetScreenInput() {
+		let hadButtons = virtualPad != VirtualPadState() || !touchpadClicks.isEmpty || psRelease != nil
+		virtualPad = VirtualPadState()
+		touchpadClicks.values.forEach { $0.cancel() }
+		touchpadClicks.removeAll()
+		psRelease?.cancel()
+		psRelease = nil
+		if hadButtons { sendPad() }
+		// Physical DualSense contacts use slots 0 and 1 and are independent of the screen.
+		for slot in touchIDs.keys.filter({ $0 >= 10 }) { handleTouch(.up(slot: slot)) }
+	}
+
 	func screenTouch(_ event: ControllerInput.TouchEvent) {
+		if case .down(let slot, _, _) = event, let click = touchpadClicks.removeValue(forKey: slot) {
+			click.cancel()
+			sendPad()
+			handleTouch(.up(slot: slot))
+		}
 		handleTouch(event)
 	}
 
-	/// On-screen PS button, for controllers whose home button iOS doesn't pass through
+	/// On-screen PS button, for controllers whose home button iOS doesn't pass through.
 	func pressPSButton() {
-		let button = UInt32(CK_BUTTON_PS.rawValue)
-		extraButtons |= button
-		sendPad()
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-			guard let self else { return }
-			self.extraButtons &= ~button
-			self.sendPad()
+		psRelease?.cancel()
+		let work = DispatchWorkItem { [weak self] in
+			self?.psRelease = nil
+			self?.sendPad()
 		}
+		psRelease = work
+		sendPad()
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
 	}
 
 	/// A quick tap on the screen: click the touchpad at the touch point, then lift the finger.
 	func screenTap(slot: Int) {
-		let button = UInt32(CK_BUTTON_TOUCHPAD.rawValue)
-		extraButtons |= button
-		sendPad()
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+		let work = DispatchWorkItem { [weak self] in
 			guard let self else { return }
-			self.extraButtons &= ~button
+			self.touchpadClicks.removeValue(forKey: slot)
 			self.sendPad()
 			self.handleTouch(.up(slot: slot))
 		}
+		touchpadClicks[slot] = work
+		sendPad()
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
 	}
 
 	private func handleTouch(_ event: ControllerInput.TouchEvent) {

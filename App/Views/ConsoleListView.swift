@@ -17,7 +17,7 @@ struct ConsoleListView: View {
 					ContentUnavailableView {
 						Label("No consoles yet", systemImage: "playstation.logo")
 					} description: {
-						Text("Link your PS5 to start streaming. Have it on the same Wi-Fi, then open Settings › System › Remote Play › Link Device on the PS5 to get a PIN.\n\nYou'll also need a game controller: there are no on-screen controls.")
+						Text("Link your PS5 to start streaming. Have it on the same Wi-Fi, then open Settings › System › Remote Play › Link Device on the PS5 to get a PIN.\n\nPlay with a connected game controller or use the virtual controls.")
 					} actions: {
 						Button("Add console") { showingAdd = true }
 							.buttonStyle(.borderedProminent)

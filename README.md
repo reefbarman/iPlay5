@@ -5,7 +5,7 @@
 PS5 Remote Play for iPhone over your local network, built on [chiaki-ng](https://github.com/streetpea/chiaki-ng)'s core. Tuned for the iPhone Duo's near-square inner screen, and works on any iPhone running iOS 17 or later.
 
 > [!IMPORTANT]
-> **You need a game controller.** There's no on-screen virtual controller. Any controller iOS supports works: DualSense, DualShock 4, Xbox, Backbone, GameSir, Razer Kishi and so on. The touchscreen acts as the DualSense touchpad.
+> **Play with a physical controller or virtual controls.** Auto keeps the virtual controls out of the way when you have a supported controller connected, such as a DualSense, Xbox controller, or Backbone. Change this in Settings › Controller.
 >
 > **iPhone Duo recommendation:** the [GameSir G8+](https://www.gamesir.hk/) **Bluetooth** version works well clipped onto the Duo. Avoid the Apple-specific (USB-C) G8 version, because it doesn't work with the Duo. The G8+ has no gyro, so iPlay5 uses the phone's gyro for motion controls.
 >
@@ -49,7 +49,7 @@ https://raw.githubusercontent.com/reefbarman/iPlay5/main/altstore-source.json
 3. Your PS5 should appear under Console. If it doesn't, use **Enter IP address manually**.
 4. Tap **Sign in with PlayStation** to fill in your account ID. If your passkey or password manager doesn't work in the sign-in window, use the **Safari** option and paste the URL you end up on.
 5. On the PS5, open **Settings › System › Remote Play › Link Device**, enter the PIN in the app and tap **Link**.
-6. Connect your controller and tap **Play**.
+6. Tap **Play**. If you don't have a controller connected, choose **Use virtual controls**, **Connect without controls**, or **Cancel**. With virtual controls showing, start a stick anywhere in the open space on its side of the screen. Tap or swipe the marked centre touchpad to use it.
 
 While streaming: tap the top-right corner, then the gear, to open settings. Or hold **Select + Start** for a second. Tap the top-left corner, then the PlayStation logo, to press the PS button.
 
