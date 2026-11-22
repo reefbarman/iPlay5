@@ -1,3 +1,4 @@
+import GameController
 import SwiftUI
 
 struct ConsoleListView: View {
@@ -5,13 +6,21 @@ struct ConsoleListView: View {
 	@Environment(SettingsStore.self) private var settings
 	@State private var monitor = HostMonitor()
 	@State private var discovery = LANDiscovery()
+	@State private var gamepad = ListGamepadNavigator()
 	@State private var showingAdd = false
 	@State private var showingSettings = false
 	@State private var playing: Console?
 	@State private var waking: UUID?
+	@State private var selection: UUID?
+
+	/// The controller only drives the list when nothing is covering it
+	private var gamepadActive: Bool {
+		playing == nil && !showingAdd && !showingSettings
+	}
 
 	var body: some View {
 		NavigationStack {
+			ScrollViewReader { proxy in
 			List {
 				if store.consoles.isEmpty {
 					ContentUnavailableView {
@@ -24,17 +33,26 @@ struct ConsoleListView: View {
 					}
 				}
 				ForEach(store.consoles) { console in
+					let selected = gamepad.confirmSymbol != nil && selection == console.id
 					ConsoleRow(
 						console: console,
 						status: monitor.statuses[console.id],
 						waking: waking == console.id,
+						confirmSymbol: selected ? gamepad.confirmSymbol : nil,
 						play: { connect(console) },
 						wake: { wake(console) }
 					)
+					.id(console.id)
+					.listRowBackground(selected ? Color.accentColor.opacity(0.18) : nil)
 					.swipeActions {
 						Button("Remove", role: .destructive) { store.remove(console) }
 					}
 				}
+			}
+			.onChange(of: selection) { _, id in
+				guard let id else { return }
+				withAnimation { proxy.scrollTo(id) }
+			}
 			}
 			.navigationTitle("iPlay5")
 			.toolbar {
@@ -57,8 +75,19 @@ struct ConsoleListView: View {
 		.onAppear {
 			monitor.sync(with: store.consoles)
 			discovery.start()
+			gamepad.onMove = { moveSelection(by: $0) }
+			gamepad.onConfirm = { activateSelection() }
+			gamepad.start()
+			gamepad.setActive(gamepadActive)
+			ensureSelection()
 		}
-		.onChange(of: store.consoles) { _, consoles in monitor.sync(with: consoles) }
+		.onDisappear { gamepad.stop() }
+		.onChange(of: gamepadActive) { _, active in gamepad.setActive(active) }
+		.onChange(of: gamepad.confirmSymbol) { _, _ in ensureSelection() }
+		.onChange(of: store.consoles) { _, consoles in
+			monitor.sync(with: consoles)
+			ensureSelection()
+		}
 		.onChange(of: playing) { _, playing in
 			// Don't poll or sweep the network while streaming
 			if playing == nil {
@@ -92,6 +121,37 @@ struct ConsoleListView: View {
 		playing = console
 	}
 
+	// MARK: - Controller navigation
+
+	private func ensureSelection() {
+		if selection == nil || !store.consoles.contains(where: { $0.id == selection }) {
+			selection = store.consoles.first?.id
+		}
+	}
+
+	private func moveSelection(by delta: Int) {
+		let ids = store.consoles.map(\.id)
+		guard !ids.isEmpty else { return }
+		guard let current = selection, let index = ids.firstIndex(of: current) else {
+			selection = ids.first
+			return
+		}
+		selection = ids[min(max(index + delta, 0), ids.count - 1)]
+	}
+
+	/// Same rules as the row's buttons: wake from rest mode, otherwise play
+	/// when the console is ready (or hasn't reported a status yet).
+	private func activateSelection() {
+		guard let id = selection, waking != id,
+			  let console = store.consoles.first(where: { $0.id == id }) else { return }
+		let status = monitor.statuses[id]
+		if status?.state == .standby {
+			wake(console)
+		} else if status == nil || status?.state == .ready {
+			connect(console)
+		}
+	}
+
 	private func wake(_ console: Console) {
 		if ConsoleWaker.wake(console) {
 			waking = console.id
@@ -107,6 +167,8 @@ private struct ConsoleRow: View {
 	let console: Console
 	let status: HostStatus?
 	let waking: Bool
+	/// SF Symbol for the controller's confirm button when this row is selected
+	let confirmSymbol: String?
 	let play: () -> Void
 	let wake: () -> Void
 
@@ -124,14 +186,27 @@ private struct ConsoleRow: View {
 			if waking {
 				ProgressView()
 			} else if status?.state == .standby {
-				Button("Wake", action: wake).buttonStyle(.bordered)
+				Button(action: wake) { buttonLabel("Wake") }.buttonStyle(.bordered)
 			} else {
-				Button("Play", action: play)
+				Button(action: play) { buttonLabel("Play") }
 					.buttonStyle(.borderedProminent)
 					.disabled(status?.state != .ready && status != nil)
 			}
 		}
 		.padding(.vertical, 6)
+	}
+
+	@ViewBuilder private func buttonLabel(_ title: String) -> some View {
+		if let confirmSymbol {
+			// Not a Label: inside a List row its icon takes the accent tint,
+			// which vanishes against the prominent button's accent background.
+			HStack(spacing: 6) {
+				Image(systemName: confirmSymbol)
+				Text(title)
+			}
+		} else {
+			Text(title)
+		}
 	}
 
 	@ViewBuilder private var statusLabel: some View {
@@ -143,6 +218,124 @@ private struct ConsoleRow: View {
 			Label("Rest mode", systemImage: "moon.fill").font(.caption).foregroundStyle(.orange)
 		default:
 			Label(waking ? "Waking…" : "Not found", systemImage: "circle").font(.caption).foregroundStyle(.secondary)
+		}
+	}
+}
+
+/// Lets a game controller drive the console list: the d-pad or left stick
+/// moves the selection, and the bottom face button (✕ on PlayStation pads,
+/// A on Xbox-style pads) wakes or plays the selected console.
+///
+/// Uses per-element handlers so it never touches the gamepad-wide
+/// `valueChangedHandler` that `ControllerInput` owns while streaming, and
+/// detaches entirely whenever the list is covered.
+@Observable
+final class ListGamepadNavigator {
+	@ObservationIgnored var onMove: ((Int) -> Void)?
+	@ObservationIgnored var onConfirm: (() -> Void)?
+	/// SF Symbol for the connected controller's confirm button, nil without a controller
+	private(set) var confirmSymbol: String?
+
+	@ObservationIgnored private var controller: GCController?
+	@ObservationIgnored private var observers: [NSObjectProtocol] = []
+	@ObservationIgnored private var active = false
+	@ObservationIgnored private var confirmArmed = false
+	@ObservationIgnored private var direction = 0
+	@ObservationIgnored private var repeatTimer: Timer?
+
+	func start() {
+		guard observers.isEmpty else { return }
+		for name in [Notification.Name.GCControllerDidConnect, .GCControllerDidDisconnect, .GCControllerDidBecomeCurrent] {
+			observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+				self?.refresh()
+			})
+		}
+		refresh()
+	}
+
+	func stop() {
+		observers.forEach(NotificationCenter.default.removeObserver)
+		observers.removeAll()
+		detach()
+		confirmSymbol = nil
+	}
+
+	func setActive(_ active: Bool) {
+		self.active = active
+		refresh()
+	}
+
+	private func refresh() {
+		let candidates = GCController.controllers().filter { $0.extendedGamepad != nil }
+		let next = GCController.current.flatMap { candidates.contains($0) ? $0 : nil } ?? candidates.first
+		confirmSymbol = next.map(Self.confirmSymbol(for:))
+
+		let wanted = active ? next : nil
+		guard wanted !== controller else { return }
+		detach()
+		guard let wanted, let pad = wanted.extendedGamepad else { return }
+		controller = wanted
+		pad.dpad.valueChangedHandler = { [weak self] _, _, _ in self?.updateDirection(pad) }
+		pad.leftThumbstick.valueChangedHandler = { [weak self] _, _, _ in self?.updateDirection(pad) }
+		pad.buttonA.pressedChangedHandler = { [weak self] _, _, pressed in
+			guard let self else { return }
+			// Fire on release so the press doesn't carry into the stream as Cross
+			if pressed {
+				self.confirmArmed = true
+			} else if self.confirmArmed {
+				self.confirmArmed = false
+				self.onConfirm?()
+			}
+		}
+	}
+
+	/// The controller's own symbol for its confirm button when the system can
+	/// render it. Some controllers report names that aren't available as SF
+	/// Symbols on the phone, which leaves an empty gap in the button.
+	private static func confirmSymbol(for controller: GCController) -> String {
+		if let name = controller.extendedGamepad?.buttonA.sfSymbolsName,
+		   UIImage(systemName: name) != nil {
+			return name
+		}
+		let pad = controller.extendedGamepad
+		return pad is GCDualSenseGamepad || pad is GCDualShockGamepad ? "xmark.circle" : "a.circle"
+	}
+
+	private func detach() {
+		if let pad = controller?.extendedGamepad {
+			pad.dpad.valueChangedHandler = nil
+			pad.leftThumbstick.valueChangedHandler = nil
+			pad.buttonA.pressedChangedHandler = nil
+		}
+		controller = nil
+		confirmArmed = false
+		setDirection(0)
+	}
+
+	private func updateDirection(_ pad: GCExtendedGamepad) {
+		let y = pad.leftThumbstick.yAxis.value
+		if pad.dpad.up.isPressed || y > 0.6 {
+			setDirection(-1)
+		} else if pad.dpad.down.isPressed || y < -0.6 {
+			setDirection(1)
+		} else if abs(y) < 0.4 {
+			setDirection(0)
+		}
+	}
+
+	/// Moves once, then repeats while held
+	private func setDirection(_ dir: Int) {
+		guard dir != direction else { return }
+		direction = dir
+		repeatTimer?.invalidate()
+		repeatTimer = nil
+		guard dir != 0 else { return }
+		onMove?(dir)
+		repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+			self?.repeatTimer = Timer.scheduledTimer(withTimeInterval: 0.12, repeats: true) { [weak self] _ in
+				guard let self, self.direction != 0 else { return }
+				self.onMove?(self.direction)
+			}
 		}
 	}
 }
