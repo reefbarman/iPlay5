@@ -603,6 +603,7 @@ CKSession *ck_session_create(const CKSessionConfig *config, const CKSessionCallb
 	info.rudp_sock = NULL;
 	info.packet_loss_max = config->packet_loss_max > 0 ? config->packet_loss_max : 0.05;
 	info.enable_idr_on_fec_failure = true;
+	info.enable_takion_v20 = config->enable_takion_v20;
 
 	if(chiaki_session_init(&s->session, &info, &s->log) != CHIAKI_ERR_SUCCESS)
 	{
@@ -708,6 +709,14 @@ double ck_session_rtt_ms(CKSession *s)
 	if(!s || !s->started)
 		return 0.0;
 	return (double)s->session.rtt_us / 1000.0;
+}
+
+int ck_session_takion_version(CKSession *s)
+{
+	if(!s || !s->started)
+		return 0;
+	uint8_t version = s->session.stream_connection.takion.version;
+	return (version >= 7 && version <= 20) ? version : 0;
 }
 
 int ck_session_keyboard_set_text(CKSession *s, const char *text)

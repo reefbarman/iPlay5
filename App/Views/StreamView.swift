@@ -627,6 +627,9 @@ private struct StatsOverlay: View {
 			Text(String(format: "%.1f Mbps (asked %d)", stats.bitrateMbps, settings.bitrateMbps))
 			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
 			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
+			if settings.takionV20, stats.takionVersion > 0 {
+				Text("Takion v\(stats.takionVersion)\(stats.takionVersion < 20 ? " (v20 declined)" : "")")
+			}
 			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
 			if settings.frameGeneration {
 				if stats.frameGenActive {

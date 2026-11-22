@@ -13,6 +13,8 @@ struct StreamStats: Equatable {
 	var rttMs: Double = 0
 	/// Packets lost recently, 0...1
 	var packetLoss: Double = 0
+	/// Takion protocol version in use (12, or 20 with the experimental mode), 0 if unknown
+	var takionVersion = 0
 	var failedFrames = 0
 	var lostFrames = 0
 	var hdrFrames = false
@@ -155,6 +157,7 @@ final class StreamSession {
 		config.enable_keyboard = true
 		config.packet_loss_max = 0.05
 		config.verbose_log = false
+		config.enable_takion_v20 = settings.takionV20
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
 		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
@@ -287,12 +290,13 @@ final class StreamSession {
 		start()
 	}
 
-	/// Applies new settings. Codec/resolution/bitrate/HDR changes need a reconnect.
+	/// Applies new settings. Codec/resolution/bitrate/HDR/protocol changes need a reconnect.
 	/// A pending retry picks up the latest settings when it runs.
 	func apply(_ new: StreamSettings) {
 		let needsReconnect =
 			new.resolution != settings.resolution || new.fps != settings.fps || new.bitrateMbps != settings.bitrateMbps
 			|| new.effectiveCodec != settings.effectiveCodec || new.hdr != settings.hdr
+			|| new.takionV20 != settings.takionV20
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.rumble.enabled = new.rumble
@@ -568,6 +572,7 @@ final class StreamSession {
 			s.bitrateMbps = ck_session_measured_bitrate_mbps(handle)
 			s.rttMs = ck_session_rtt_ms(handle)
 			s.packetLoss = ck_session_packet_loss(handle)
+			s.takionVersion = Int(ck_session_takion_version(handle))
 		}
 		s.width = decoder.dimensions.width
 		s.height = decoder.dimensions.height

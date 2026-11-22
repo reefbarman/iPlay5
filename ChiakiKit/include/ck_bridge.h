@@ -149,6 +149,9 @@ extern "C"
         /// Upstream default is 0.05 (5%).
         double packet_loss_max;
         bool verbose_log;
+        /// Experimental: offer Takion v20 to a PS5 when connecting. The console picks the
+        /// version; without an answer the stream stays on v12. Off keeps the stock v12 path.
+        bool enable_takion_v20;
     } CKSessionConfig;
 
     typedef struct CKSession CKSession;
@@ -168,6 +171,9 @@ extern "C"
     double ck_session_packet_loss(CKSession *session);
     /// Round trip time measured while connecting, in milliseconds.
     double ck_session_rtt_ms(CKSession *session);
+    /// Takion protocol version the stream is using (12, or 20 when the experimental mode
+    /// was accepted), 0 before the stream connection is up.
+    int ck_session_takion_version(CKSession *session);
 
     /// Text input for a console text box: send the whole text on every change,
     /// then accept (submit) or reject (cancel).

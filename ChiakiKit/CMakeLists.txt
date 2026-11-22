@@ -13,6 +13,12 @@
 # - takion.pb.{c,h} are pre-generated in generated/ so protoc/python are not
 #   needed at build time. Regenerate them with nanopb's generator from
 #   vendor/chiaki-ng/lib/protobuf/takion.proto if a chiaki-ng bump changes it.
+# - chiaki-ng's lib/src and lib/include are copied into the build directory and
+#   patches/*.patch are applied to the copy (the submodule stays pristine).
+#   0001-takion-v20.patch adds the opt-in Takion v20 mode, ported from P5M
+#   (https://github.com/beecrepaldi-afk/P5M-mac, AGPL-3.0, mac/TAKION-V20.md).
+#   Regenerate a patch against a pristine copy of vendor/chiaki-ng/lib with
+#   `diff -ruN a b` (paths a/src/..., applied with patch -p1).
 
 cmake_minimum_required(VERSION 3.20)
 project(ChiakiKit C)
@@ -78,8 +84,28 @@ target_include_directories(jerasure PUBLIC "${TP}/jerasure/include")
 target_link_libraries(jerasure PUBLIC gf_complete)
 target_compile_options(jerasure PRIVATE -w)
 
+# ---------------------------------------------------------- patched chiaki lib
+set(CHIAKI_LIB "${CMAKE_BINARY_DIR}/chiaki-lib")
+file(GLOB CHIAKI_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
+list(SORT CHIAKI_PATCHES)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CHIAKI_PATCHES})
+file(REMOVE_RECURSE "${CHIAKI_LIB}")
+file(COPY "${CHIAKI_DIR}/lib/src" "${CHIAKI_DIR}/lib/include" DESTINATION "${CHIAKI_LIB}")
+foreach(PATCH_FILE ${CHIAKI_PATCHES})
+	execute_process(
+		COMMAND patch -p1 --forward --batch --no-backup-if-mismatch -i "${PATCH_FILE}"
+		WORKING_DIRECTORY "${CHIAKI_LIB}"
+		RESULT_VARIABLE PATCH_RESULT
+		OUTPUT_VARIABLE PATCH_OUTPUT
+		ERROR_VARIABLE PATCH_OUTPUT)
+	if(NOT PATCH_RESULT EQUAL 0)
+		message(FATAL_ERROR "Applying ${PATCH_FILE} to chiaki-ng failed:\n${PATCH_OUTPUT}")
+	endif()
+	message(STATUS "Applied chiaki-ng patch ${PATCH_FILE}")
+endforeach()
+
 # ------------------------------------------------------------------ chiaki lib
-set(L "${CHIAKI_DIR}/lib/src")
+set(L "${CHIAKI_LIB}/src")
 add_library(chiaki STATIC
 	${L}/common.c ${L}/sock.c ${L}/session.c ${L}/thread.c ${L}/base64.c
 	${L}/http.c ${L}/log.c ${L}/ctrl.c ${L}/rpcrypt.c ${L}/takion.c
@@ -97,7 +123,7 @@ add_library(chiaki STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/ck_bridge.c")
 
 target_include_directories(chiaki
-	PUBLIC "${CHIAKI_DIR}/lib/include" "${CMAKE_CURRENT_SOURCE_DIR}/include"
+	PUBLIC "${CHIAKI_LIB}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include"
 	PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/generated" "${L}" "${CMAKE_BINARY_DIR}/opusinc"
 		"${CMAKE_CURRENT_SOURCE_DIR}/shim"
 		"${ROOT}/vendor/opus/include")

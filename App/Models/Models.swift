@@ -115,6 +115,9 @@ struct StreamSettings: Codable, Equatable {
 	var frameGeneration: Bool = false
 	/// Debug: a button on the stream that saves the last few seconds of frames
 	var frameCapture: Bool = false
+	/// Experimental: offer the PS5 the newer Takion v20 stream protocol. The console picks;
+	/// it stays on v12 if it doesn't answer. Off keeps the stock chiaki-ng v12 path.
+	var takionV20: Bool = false
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
@@ -146,6 +149,7 @@ struct StreamSettings: Codable, Equatable {
 			frameGeneration = mode != "off"
 		}
 		frameCapture = try c.decodeIfPresent(Bool.self, forKey: .frameCapture) ?? d.frameCapture
+		takionV20 = try c.decodeIfPresent(Bool.self, forKey: .takionV20) ?? d.takionV20
 	}
 }
 
