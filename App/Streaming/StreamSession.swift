@@ -69,8 +69,12 @@ final class StreamSession {
 	/// A short message for the user, e.g. a rest mode request that failed
 	private(set) var notice: String?
 
-	let console: Console
+	/// Refreshed from `latestConsole` on every connect, so retries follow an IP change
+	private(set) var console: Console
 	private(set) var settings: StreamSettings
+	/// The console as currently stored (discovery updates its address when it moves).
+	/// Without this, Reconnect would keep dialling the address the stream screen opened with.
+	@ObservationIgnored var latestConsole: (() -> Console?)?
 
 	@ObservationIgnored let renderer: MetalRenderer?
 	@ObservationIgnored let input = ControllerInput()
@@ -132,6 +136,10 @@ final class StreamSession {
 		keyboardText = nil
 		lostFrames = 0
 		lastDecoded = 0
+		if let latest = latestConsole?(), latest.id == console.id {
+			if latest.host != console.host { log.notice("Console address changed since the stream screen opened, using the new one") }
+			console = latest
+		}
 
 		let codec = settings.effectiveCodec
 		let decoder = VideoDecoder(hevc: codec == .h265, tenBit: settings.hdr)

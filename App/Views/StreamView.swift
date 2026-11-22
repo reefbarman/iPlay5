@@ -5,6 +5,7 @@ struct StreamView: View {
 	let console: Console
 
 	@Environment(SettingsStore.self) private var settingsStore
+	@Environment(ConsoleStore.self) private var consoleStore
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.scenePhase) private var scenePhase
 	@State private var session: StreamSession?
@@ -163,6 +164,8 @@ struct StreamView: View {
 			session.input.interfaceOrientation = orientation
 		}
 		session.input.onMenuCombo = { showMenu = true }
+		let store = consoleStore, id = console.id
+		session.latestConsole = { store.consoles.first { $0.id == id } }
 		self.session = session
 		session.start()
 	}
