@@ -88,7 +88,7 @@ struct StreamView: View {
 			guard streaming, !hintShown else { return }
 			hintShown = true
 			flashSettingsHint()
-			if !wantsVirtualControls { revealFGButton() }
+			revealFGButton()
 		}
 		// Rest mode worked: straight back to the console list, no Reconnect screen
 		.onChange(of: session?.state == .consoleAsleep) { _, asleep in
@@ -114,6 +114,8 @@ struct StreamView: View {
 					highRefresh: session.settings.highRefreshDisplay,
 					acceptsInput: acceptsScreenInput,
 					virtualControls: showsVirtualControls,
+					videoAspectForLetterbox: letterboxAspect(for: session),
+					onFrameGenerationTap: { activateFrameGenerationShortcut(session) },
 					onVirtualPad: { [weak session] in session?.setVirtualPad($0) },
 					onReset: { [weak session] in session?.resetScreenInput() },
 					onTouch: { [weak session] in session?.screenTouch($0) },
@@ -337,20 +339,29 @@ struct StreamView: View {
 		}
 	}
 
-	/// Turns frame generation on and off. The whole bottom-right corner is the
-	/// button, so a slightly-off tap doesn't land on the touchpad. The label
-	/// fades out after a few seconds but the corner stays tappable: a tap
-	/// while it's hidden just brings it back, the next one toggles it.
-	/// With virtual controls, use a visible button instead of a large transparent hotspot.
-	private func frameGenButton(_ session: StreamSession, compact: Bool) -> some View {
+	private func activateFrameGenerationShortcut(_ session: StreamSession, pinned: Bool = false) {
+		if pinned || showFGButton {
+			settingsStore.settings.frameGeneration.toggle()
+			session.apply(settingsStore.settings)
+		}
+		revealFGButton()
+	}
+
+	private func letterboxAspect(for session: StreamSession) -> CGFloat? {
+		guard session.settings.displayMode == .fit else { return nil }
+		let stats = session.stats
+		if stats.width > 0, stats.height > 0 { return CGFloat(stats.width) / CGFloat(stats.height) }
+		return 16.0 / 9.0
+	}
+
+	/// The UIKit touch router handles the rest of the original hotspot in virtual mode,
+	/// so a fixed gameplay button can claim a touch first.
+	private func frameGenButton(_ session: StreamSession, compact: Bool, pinned: Bool = false) -> some View {
 		let on = settingsStore.settings.frameGeneration
+		let visible = pinned || showFGButton
 		let (text, colour): (String, Color) = on ? ("FG on", .green.opacity(0.85)) : ("FG off", .black.opacity(0.45))
 		return Button {
-			if compact || showFGButton {
-				settingsStore.settings.frameGeneration.toggle()
-				session.apply(settingsStore.settings)
-			}
-			if !compact { revealFGButton() }
+			activateFrameGenerationShortcut(session, pinned: pinned)
 		} label: {
 			Text(text)
 				.font(.caption.weight(.bold))
@@ -358,19 +369,17 @@ struct StreamView: View {
 				.padding(.horizontal, 10)
 				.frame(minWidth: 52, minHeight: 30)
 				.background(colour, in: Capsule())
-				.opacity(compact || showFGButton ? 1 : 0)
-				.padding(.bottom, compact ? 0 : 12)
-				.padding(.trailing, compact ? 0 : 16)
-				.frame(width: compact ? 64 : 130, height: compact ? 44 : 90,
-					alignment: compact ? .center : .bottomTrailing)
+				.opacity(visible ? 1 : 0)
+				.padding(.bottom, 12)
+				.padding(.trailing, 16)
+				.frame(width: compact ? 84 : StreamMetalView.frameGenerationCornerSize.width,
+					height: compact ? 54 : StreamMetalView.frameGenerationCornerSize.height, alignment: .bottomTrailing)
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel("Frame generation \(on ? "on" : "off"). Tap to turn it \(on ? "off" : "on").")
-		.padding(.bottom, compact ? 4 : 0)
-		.padding(.trailing, compact ? 8 : 0)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-		.ignoresSafeArea(.container, edges: compact ? [] : .all)
+		.ignoresSafeArea()
 	}
 
 	// MARK: - Frame capture (debug, bottom left)
@@ -396,17 +405,14 @@ struct StreamView: View {
 			.padding(.vertical, 6)
 			.background(.black.opacity(0.45), in: Capsule())
 			.opacity(session.captureStatus == nil ? 0.6 : 1)
-			.frame(minWidth: compact ? 44 : nil, minHeight: compact ? 44 : nil)
-			.padding(.bottom, compact ? 0 : 12)
-			.padding(.leading, compact ? 0 : 16)
+			.padding(.bottom, 12)
+			.padding(.leading, 16)
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel("Save the last few seconds of frames")
-		.padding(.bottom, compact ? 4 : 0)
-		.padding(.leading, compact ? 8 : 0)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-		.ignoresSafeArea(.container, edges: compact ? [] : .all)
+		.ignoresSafeArea()
 	}
 
 	// MARK: - Heat warning
@@ -765,6 +771,8 @@ private struct MetalStreamView: UIViewRepresentable {
 	let highRefresh: Bool
 	let acceptsInput: Bool
 	let virtualControls: Bool
+	let videoAspectForLetterbox: CGFloat?
+	let onFrameGenerationTap: () -> Void
 	let onVirtualPad: (VirtualPadState) -> Void
 	let onReset: () -> Void
 	let onTouch: (ControllerInput.TouchEvent) -> Void
@@ -784,6 +792,8 @@ private struct MetalStreamView: UIViewRepresentable {
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap
 		uiView.onLeftCornerTap = onLeftCornerTap
+		uiView.videoAspectForLetterbox = videoAspectForLetterbox
+		uiView.onFrameGenerationTap = onFrameGenerationTap
 		uiView.onVirtualPad = onVirtualPad
 		uiView.onReset = onReset
 		uiView.setInputMode(acceptsInput: acceptsInput, virtualControls: virtualControls)

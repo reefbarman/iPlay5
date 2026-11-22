@@ -564,6 +564,13 @@ final class StreamMetalView: UIView {
 	private var acceptsInput = false
 	private let controls = VirtualControlsOverlay(frame: .zero)
 	private var controlsArea = CGRect.null
+	private var systemButtonY: CGFloat?
+	var videoAspectForLetterbox: CGFloat? {
+		didSet { if videoAspectForLetterbox != oldValue { setNeedsLayout() } }
+	}
+	var onFrameGenerationTap: (() -> Void)?
+	private var frameGenerationTouches: Set<ObjectIdentifier> = []
+	static let frameGenerationCornerSize = CGSize(width: 130, height: 90)
 
 	/// Hot corner size in points, at the top-right and top-left of the view
 	static let cornerSize = CGSize(width: 140, height: 90)
@@ -635,12 +642,25 @@ final class StreamMetalView: UIView {
 		metalLayer.contentsScale = scale
 		renderer.setDrawableSize(CGSize(width: bounds.width * scale, height: bounds.height * scale))
 		let area = bounds.inset(by: safeAreaInsets)
-		if controls.frame != bounds || controlsArea != area {
+		let buttonY = bottomSystemButtonY(in: area)
+		if controls.frame != bounds || controlsArea != area || systemButtonY != buttonY {
 			resetTouches()
 			controlsArea = area
+			systemButtonY = buttonY
 			controls.frame = bounds
-			controls.setLayout(in: area)
+			controls.setLayout(in: area, systemButtonY: buttonY)
 		}
+	}
+
+	private func bottomSystemButtonY(in safeArea: CGRect) -> CGFloat {
+		if let aspect = videoAspectForLetterbox, aspect > 0 {
+			// The renderer centres Fit video. Only use the bar when the entire button fits.
+			let videoBottom = bounds.midY + bounds.width / aspect / 2
+			if safeArea.maxY - videoBottom >= VirtualControlsOverlay.systemButtonHeight + 8 {
+				return (videoBottom + safeArea.maxY) / 2
+			}
+		}
+		return safeArea.maxY - (VirtualControlsOverlay.systemButtonHeight / 2 + 4)
 	}
 
 	override func safeAreaInsetsDidChange() {
@@ -658,6 +678,7 @@ final class StreamMetalView: UIView {
 
 	private func resetTouches() {
 		tracked.removeAll()
+		frameGenerationTouches.removeAll()
 		controls.reset()
 		onReset?()
 	}
@@ -676,6 +697,11 @@ final class StreamMetalView: UIView {
 	private var leftCornerRect: CGRect {
 		let size = shortcutSize
 		return CGRect(x: bounds.minX, y: bounds.minY, width: size.width, height: size.height)
+	}
+
+	private var frameGenerationCornerRect: CGRect {
+		let size = Self.frameGenerationCornerSize
+		return CGRect(x: bounds.maxX - size.width, y: bounds.maxY - size.height, width: size.width, height: size.height)
 	}
 
 	/// The upper half maps to the whole DualSense touchpad in either controller mode.
@@ -705,10 +731,16 @@ final class StreamMetalView: UIView {
 			}
 			let inTouchpad = touchpadRect.contains(p)
 			if !controls.isHidden {
-				// Fixed controls win, but a floating stick can't start in the touchpad.
-				let result = controls.begin(ObjectIdentifier(touch), at: p, allowsStick: !inTouchpad)
+				let key = ObjectIdentifier(touch)
+				let inFrameGenerationCorner = frameGenerationCornerRect.contains(p)
+				// Fixed controls win over shortcuts, and sticks only start in free space.
+				let result = controls.begin(key, at: p, allowsStick: !inTouchpad && !inFrameGenerationCorner)
 				if let state = result.state { onVirtualPad?(state) }
 				if result.handled { continue }
+				if inFrameGenerationCorner {
+					frameGenerationTouches.insert(key)
+					continue
+				}
 			}
 			guard inTouchpad else { continue }
 			let used = Set(tracked.values.map(\.slot))
@@ -747,6 +779,10 @@ final class StreamMetalView: UIView {
 	private func finishTouches(_ touches: Set<UITouch>, allowsTap: Bool) {
 		for touch in touches {
 			let key = ObjectIdentifier(touch)
+			if frameGenerationTouches.remove(key) != nil {
+				if allowsTap && frameGenerationCornerRect.contains(touch.location(in: self)) { onFrameGenerationTap?() }
+				continue
+			}
 			guard let t = tracked.removeValue(forKey: key) else {
 				if let state = controls.end(key) { onVirtualPad?(state) }
 				continue

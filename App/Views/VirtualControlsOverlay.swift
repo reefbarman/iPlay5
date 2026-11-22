@@ -43,8 +43,8 @@ final class VirtualControlsOverlay: UIView {
 	private var dpadCentre = CGPoint.zero
 	private var dpadRect = CGRect.zero
 
-	private var area = CGRect.null
 	private var pad = VirtualPadState()
+	static let systemButtonHeight: CGFloat = 44
 	private static let stickRadius: CGFloat = 42
 
 	// Three upright rays: shorter angled marks flank the tall centre mark.
@@ -75,15 +75,12 @@ final class VirtualControlsOverlay: UIView {
 	@available(*, unavailable)
 	required init?(coder: NSCoder) { fatalError() }
 
-	func setLayout(in safeArea: CGRect) {
-		guard area != safeArea else { return }
-		area = safeArea
+	func setLayout(in safeArea: CGRect, systemButtonY: CGFloat) {
 		let x = safeArea.minX + 68, right = safeArea.maxX - 68
 		// Keep the D-pad and face buttons above the 44-point bottom shortcut row.
 		let row = safeArea.maxY - 125
 		// Sit just above the D-pad and face buttons, even on the taller inner screen.
 		let shoulders = row - 86
-		let bottom = safeArea.maxY - 26
 		let middle = safeArea.midX
 		func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat = 44, _ h: CGFloat = 44) -> CGRect {
 			CGRect(x: x - w / 2, y: y - h / 2, width: w, height: h)
@@ -108,8 +105,8 @@ final class VirtualControlsOverlay: UIView {
 			button("×", right, row + 36, CK_BUTTON_CROSS),
 			button("L3", x + 76, row + 37, CK_BUTTON_L3),
 			button("R3", right - 76, row + 37, CK_BUTTON_R3),
-			Control("Create", rect(middle - 32, bottom, 52, 44), .button(CK_BUTTON_SHARE.rawValue), rounded: true, icon: Self.createIcon),
-			Control("Options", rect(middle + 32, bottom, 52, 44), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true, icon: Self.optionsIcon),
+			Control("Create", rect(middle - 32, systemButtonY, 52, Self.systemButtonHeight), .button(CK_BUTTON_SHARE.rawValue), rounded: true, icon: Self.createIcon),
+			Control("Options", rect(middle + 32, systemButtonY, 52, Self.systemButtonHeight), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true, icon: Self.optionsIcon),
 		]
 		setNeedsDisplay()
 	}
