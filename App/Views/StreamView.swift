@@ -6,6 +6,7 @@ struct StreamView: View {
 
 	@Environment(SettingsStore.self) private var settingsStore
 	@Environment(ConsoleStore.self) private var consoleStore
+	@Environment(BitrateMemory.self) private var bitrateMemory
 	@Environment(\.dismiss) private var dismiss
 	@Environment(\.scenePhase) private var scenePhase
 	@State private var session: StreamSession?
@@ -38,6 +39,8 @@ struct StreamView: View {
 	@State private var showHeatWarning = false
 	/// The corner hints show once per stream screen, not again after a reconnect
 	@State private var hintShown = false
+	/// Auto bitrate's key for this console on the Wi-Fi network the stream started on
+	@State private var bitrateKey: String?
 
 	private var needsController: Bool { !hasController && sessionControlsMode == nil }
 
@@ -45,16 +48,38 @@ struct StreamView: View {
 	private var storedConsole: Console? { consoleStore.consoles.first { $0.id == console.id } }
 
 	/// The shared settings with this console's own video and network settings on top
-	private var effectiveSettings: StreamSettings {
+	private var baseSettings: StreamSettings {
 		settingsStore.settings.applying(storedConsole?.customSettings)
 	}
 
+	/// The bitrate Auto bitrate has learned for this console on this network, if any
+	private var learnedBitrate: Int? {
+		guard baseSettings.autoBitrate, let bitrateKey else { return nil }
+		return bitrateMemory.bitrate(for: bitrateKey)
+	}
+
+	/// What the stream uses: the base settings with any learned bitrate
+	private var effectiveSettings: StreamSettings {
+		var settings = baseSettings
+		if let learnedBitrate { settings.bitrateMbps = learnedBitrate }
+		return settings
+	}
+
 	/// Edits go to the console's own settings for video and network when it has them,
-	/// and to the shared settings for everything else
+	/// and to the shared settings for everything else. With Auto bitrate, a bitrate
+	/// change is remembered for this network instead of changing the starting bitrate.
 	private var settingsBinding: Binding<StreamSettings> {
 		Binding(
 			get: { effectiveSettings },
 			set: { new in
+				var new = new
+				if new.autoBitrate, baseSettings.autoBitrate, let bitrateKey, new.bitrateMbps != effectiveSettings.bitrateMbps {
+					bitrateMemory.setManual(new.bitrateMbps, for: bitrateKey)
+					new.bitrateMbps = baseSettings.bitrateMbps
+				} else if learnedBitrate != nil, new.bitrateMbps == effectiveSettings.bitrateMbps {
+					// Unchanged here, so keep the starting bitrate rather than saving the learned one over it
+					new.bitrateMbps = baseSettings.bitrateMbps
+				}
 				guard var stored = storedConsole, stored.customSettings != nil else {
 					settingsStore.settings = new
 					return
@@ -266,7 +291,14 @@ struct StreamView: View {
 	}
 
 	private func startSession() {
-		let session = StreamSession(console: storedConsole ?? console, settings: effectiveSettings)
+		let key = LocalNetwork.currentKey().map { BitrateMemory.key(console: console.id, network: $0) }
+		bitrateKey = key
+		var settings = baseSettings
+		if settings.autoBitrate, let key, let learned = bitrateMemory.bitrate(for: key) {
+			settings.bitrateMbps = learned
+			log.notice("Auto bitrate: using \(learned) Mbps learned for this network")
+		}
+		let session = StreamSession(console: storedConsole ?? console, settings: settings)
 		if let orientation = interfaceOrientation {
 			session.input.interfaceOrientation = orientation
 		}
@@ -280,7 +312,15 @@ struct StreamView: View {
 	}
 
 	private func stop() {
-		session?.stop()
+		if let session {
+			session.stop()
+			// Learn from how it went, for the next time on this network
+			if baseSettings.autoBitrate, let bitrateKey {
+				for report in session.qualityReports {
+					bitrateMemory.record(report, for: bitrateKey, starting: baseSettings.bitrateMbps)
+				}
+			}
+		}
 		session = nil
 		AppDelegate.setStreaming(false)
 	}
@@ -856,7 +896,8 @@ struct StreamView: View {
 						Button("Use saved virtual controls setting") { self.sessionControlsMode = nil }
 					}
 				}
-				StreamSettingsForm(settings: settings, customConsoleName: customName)
+				StreamSettingsForm(settings: settings, customConsoleName: customName,
+					bitrateTitle: baseSettings.autoBitrate && bitrateKey != nil ? "Bitrate on this network" : nil)
 				Section {
 					Toggle("Marketing screenshot mode", isOn: $marketingScreenshotMode)
 					Button {

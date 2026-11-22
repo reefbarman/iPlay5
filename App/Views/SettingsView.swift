@@ -5,6 +5,10 @@ struct StreamSettingsForm: View {
 	@Binding var settings: StreamSettings
 	/// Set when the video and network settings shown are this console's own
 	var customConsoleName: String?
+	/// Overrides the bitrate slider's label, e.g. while streaming on a network with a learned bitrate
+	var bitrateTitle: String?
+
+	@Environment(BitrateMemory.self) private var bitrateMemory
 
 	private var upscalingSelection: Binding<UpscalingMode> {
 		Binding(
@@ -15,7 +19,16 @@ struct StreamSettingsForm: View {
 	private var opacityPercent: Int { Int((settings.controlsOpacity * 100).rounded()) }
 
 	var body: some View {
-		VideoSettingsSection(settings: $settings, customConsoleName: customConsoleName)
+		VideoSettingsSection(settings: $settings, customConsoleName: customConsoleName, bitrateTitle: bitrateTitle)
+
+		Section {
+			Toggle("Auto bitrate", isOn: $settings.autoBitrate)
+			if settings.autoBitrate && !bitrateMemory.entries.isEmpty {
+				Button("Forget learned bitrates", role: .destructive) { bitrateMemory.forgetAll() }
+			}
+		} footer: {
+			Text("Remembers the bitrate that works for each console on each Wi-Fi network, so you don't have to keep tuning it. A new network starts at the starting bitrate above. After a few minutes of smooth play it goes up about a fifth next time (up to 100 Mbps, or your starting bitrate if that's higher), and after a session that drops video it comes down a quarter. It never changes mid-game. Moving the bitrate slider while you play, or applying an Optimise connection suggestion, sets it for that network.")
+		}
 
 		Section {
 			Picker("Picture", selection: $settings.displayMode) {
@@ -99,6 +112,7 @@ struct StreamSettingsForm: View {
 struct VideoSettingsSection: View {
 	@Binding var settings: StreamSettings
 	var customConsoleName: String?
+	var bitrateTitle: String?
 
 	var body: some View {
 		Section {
@@ -111,7 +125,7 @@ struct VideoSettingsSection: View {
 			}
 			VStack(alignment: .leading) {
 				HStack {
-					Text("Bitrate")
+					Text(bitrateTitle ?? (settings.autoBitrate ? "Starting bitrate" : "Bitrate"))
 					Spacer()
 					Text("\(settings.bitrateMbps) Mbps").foregroundStyle(.secondary).monospacedDigit()
 				}

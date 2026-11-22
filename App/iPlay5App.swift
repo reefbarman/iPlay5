@@ -11,6 +11,7 @@ struct iPlay5App: App {
 	@UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 	@State private var consoles = ConsoleStore()
 	@State private var settings = SettingsStore()
+	@State private var bitrateMemory = BitrateMemory()
 
 	init() {
 		ChiakiLib.initialise()
@@ -21,6 +22,7 @@ struct iPlay5App: App {
 			ConsoleListView()
 				.environment(consoles)
 				.environment(settings)
+				.environment(bitrateMemory)
 				.preferredColorScheme(.dark)
 				.background {
 					// Track the window shape so orientation follows fold/unfold

@@ -130,6 +130,14 @@ final class StreamSession {
 	/// We disconnected (or held off a reconnect) while in the background: connect again on return
 	@ObservationIgnored private var resumeInForeground = false
 	@ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
+	/// How each finished connection went, for Auto bitrate (read once the screen closes)
+	@ObservationIgnored private(set) var qualityReports: [StreamQualityReport] = []
+	@ObservationIgnored private var qualityBitrate = 0
+	@ObservationIgnored private var qualityStreamingSeconds = 0
+	@ObservationIgnored private var qualitySeconds = 0
+	@ObservationIgnored private var qualityLossSum: Double = 0
+	@ObservationIgnored private var qualityPeak: Double = 0
+	@ObservationIgnored private var qualityLostAtStart = 0
 
 	/// What chiaki's callbacks point at: this session plus which connection they belong to.
 	/// Tearing a connection down makes chiaki send a "stopped" event that reaches the main
@@ -185,6 +193,12 @@ final class StreamSession {
 		keyboardText = nil
 		lostFrames = 0
 		lastDecoded = 0
+		qualityBitrate = settings.bitrateMbps
+		qualityStreamingSeconds = 0
+		qualitySeconds = 0
+		qualityLossSum = 0
+		qualityPeak = 0
+		qualityLostAtStart = 0
 		if let latest = latestConsole?(), latest.id == console.id {
 			if latest.host != console.host { log.notice("Console address changed since the stream screen opened, using the new one") }
 			console = latest
@@ -580,6 +594,7 @@ final class StreamSession {
 	}
 
 	private func teardown() {
+		finishQualityReport()
 		statsTimer?.invalidate()
 		statsTimer = nil
 		// A new connection starts fresh counters, so a check in progress can't carry on
@@ -801,5 +816,32 @@ final class StreamSession {
 		}
 		stats = s
 		sampleConnectionCheck(s)
+		sampleQuality(s)
+	}
+
+	// MARK: - Auto bitrate
+
+	/// Seconds after connecting that are left out: the start can be rough on any network
+	private static let qualityWarmupSeconds = 5
+
+	private func sampleQuality(_ s: StreamStats) {
+		guard state == .streaming, !paused, !backgrounded else { return }
+		qualityStreamingSeconds += 1
+		let lost = s.lostFrames + s.failedFrames
+		if qualityStreamingSeconds == Self.qualityWarmupSeconds { qualityLostAtStart = lost }
+		guard qualityStreamingSeconds > Self.qualityWarmupSeconds else { return }
+		qualitySeconds += 1
+		qualityLossSum += s.packetLoss
+		qualityPeak = max(qualityPeak, s.bitrateMbps)
+	}
+
+	private func finishQualityReport() {
+		guard handle != nil, qualitySeconds > 0, let decoder else { return }
+		let lost = Int(lostFrames) + decoder.failedFrames
+		qualityReports.append(StreamQualityReport(
+			bitrateMbps: qualityBitrate, seconds: qualitySeconds,
+			averageLoss: qualityLossSum / Double(qualitySeconds),
+			lostFrames: max(0, lost - qualityLostAtStart), peakMbps: qualityPeak))
+		qualitySeconds = 0
 	}
 }

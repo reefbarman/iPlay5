@@ -189,6 +189,9 @@ struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
 	var fps: Int = 60
 	var bitrateMbps: Int = 30
+	/// Learn the bitrate that works for each console on each network (BitrateMemory).
+	/// `bitrateMbps` is then where a new network starts.
+	var autoBitrate: Bool = true
 	var codec: VideoCodecChoice = .h265
 	var hdr: Bool = false
 	var displayMode: DisplayMode = .fit
@@ -263,6 +266,7 @@ struct StreamSettings: Codable, Equatable {
 		resolution = try c.decodeIfPresent(StreamResolution.self, forKey: .resolution) ?? d.resolution
 		fps = try c.decodeIfPresent(Int.self, forKey: .fps) ?? d.fps
 		bitrateMbps = try c.decodeIfPresent(Int.self, forKey: .bitrateMbps) ?? d.bitrateMbps
+		autoBitrate = try c.decodeIfPresent(Bool.self, forKey: .autoBitrate) ?? d.autoBitrate
 		codec = try c.decodeIfPresent(VideoCodecChoice.self, forKey: .codec) ?? d.codec
 		hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr) ?? d.hdr
 		displayMode = try c.decodeIfPresent(DisplayMode.self, forKey: .displayMode) ?? d.displayMode
