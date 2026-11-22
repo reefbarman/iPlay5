@@ -498,13 +498,18 @@ final class MetalRenderer {
 				{
 					generator.interpolate(
 						previous: (prevLuma, prevChroma), current: (lumaTex, chromaTex), into: commandBuffer)
-					drawFrame(luma: outLuma, chroma: outChroma, to: drawable.texture, in: commandBuffer)
+					// Time frame generation on its own: the draw (MetalFX 4K especially) would
+					// inflate it and make the generator step its quality down for no reason
 					commandBuffer.addCompletedHandler { [weak self] buffer in
 						_ = (previous, luma, chroma)
 						let ms = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
 						guard let self, ms > 0 else { return }
 						self.lock.withLock { self.generateMs = self.generateMs == 0 ? ms : self.generateMs * 0.9 + ms * 0.1 }
 					}
+					commandBuffer.commit()
+					guard let drawBuffer = queue.makeCommandBuffer() else { return }
+					commandBuffer = drawBuffer
+					drawFrame(luma: outLuma, chroma: outChroma, to: drawable.texture, in: commandBuffer)
 					let seq = capture?.reserve(.generated, pair: realFrames)
 					if let seq { capturedGenerated = (seq, outLuma, outChroma) }
 					track(drawable, in: commandBuffer, captureSeq: seq, capture: capture)
