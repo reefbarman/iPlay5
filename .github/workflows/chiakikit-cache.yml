@@ -1,0 +1,31 @@
+# Builds ChiakiKit on main and saves it to the Actions cache so release tags
+# can restore it. Tag runs cannot share caches with each other, only with main.
+name: ChiakiKit cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - vendor/**
+      - ChiakiKit/**
+      - scripts/build-chiaki.sh
+      - .github/actions/chiakikit/**
+      - .github/workflows/chiakikit-cache.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chiakikit:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - uses: ./.github/actions/chiakikit
+        with:
+          save: "true"

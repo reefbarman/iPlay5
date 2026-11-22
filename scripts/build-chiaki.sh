@@ -3,6 +3,7 @@
 #
 #   scripts/build-chiaki.sh            # Release
 #   CONFIG=Debug scripts/build-chiaki.sh
+#   SLICES=ios scripts/build-chiaki.sh  # device only (release CI); no simulator support
 #
 # Output: Frameworks/ChiakiKit.xcframework
 set -euo pipefail
@@ -10,6 +11,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG="${CONFIG:-Release}"
 MIN_IOS="${MIN_IOS:-17.0}"
+SLICES="${SLICES:-ios sim}"
 BUILD="$ROOT/build/chiakikit"
 OUT="$ROOT/Frameworks/ChiakiKit.xcframework"
 
@@ -30,8 +32,14 @@ build_slice() {
 	libtool -static -no_warning_for_no_symbols -o "$dir/libChiakiKit.a" $libs
 }
 
-build_slice ios iphoneos
-build_slice sim iphonesimulator
+XCF_ARGS=()
+for slice in $SLICES; do
+	case "$slice" in
+	ios) build_slice ios iphoneos ;;
+	sim) build_slice sim iphonesimulator ;;
+	*) echo "Unknown slice '$slice' (expected ios and/or sim)" >&2; exit 1 ;;
+	esac
+done
 
 # Public headers: only the bridge. chiaki's own headers stay private.
 HDR="$BUILD/headers"
@@ -45,18 +53,20 @@ module ChiakiKit {
 }
 EOF
 
+for slice in $SLICES; do
+	XCF_ARGS+=(-library "$BUILD/$slice/libChiakiKit.a" -headers "$HDR")
+done
+
 rm -rf "$OUT"
 mkdir -p "$(dirname "$OUT")"
-xcodebuild -create-xcframework \
-	-library "$BUILD/ios/libChiakiKit.a" -headers "$HDR" \
-	-library "$BUILD/sim/libChiakiKit.a" -headers "$HDR" \
-	-output "$OUT" >/dev/null
+xcodebuild -create-xcframework "${XCF_ARGS[@]}" -output "$OUT" >/dev/null
 
-echo "Built $OUT"
+echo "Built $OUT ($SLICES)"
 
 # Sanity check: report undefined chiaki/ck symbols that nothing in the archive defines
-UNDEF=$(nm -u "$BUILD/ios/libChiakiKit.a" 2>/dev/null | grep -E '^_(chiaki|ck_|holepunch)' | sort -u || true)
-DEF=$(nm -gU "$BUILD/ios/libChiakiKit.a" 2>/dev/null | awk '{print $3}' | sort -u)
+CHECK_LIB="$BUILD/${SLICES%% *}/libChiakiKit.a"
+UNDEF=$(nm -u "$CHECK_LIB" 2>/dev/null | grep -E '^_(chiaki|ck_|holepunch)' | sort -u || true)
+DEF=$(nm -gU "$CHECK_LIB" 2>/dev/null | awk '{print $3}' | sort -u)
 MISSING=$(comm -23 <(echo "$UNDEF") <(echo "$DEF") | grep -v '^$' || true)
 if [ -n "$MISSING" ]; then
 	echo "WARNING: unresolved chiaki symbols:" >&2
