@@ -119,6 +119,14 @@ final class StreamSession {
 	@ObservationIgnored private var reconnectWork: DispatchWorkItem?
 	@ObservationIgnored private var sleepWork: DispatchWorkItem?
 	@ObservationIgnored private var noticeWork: DispatchWorkItem?
+	/// In another app: the connection is kept up for as long as iOS lets us run,
+	/// but there's no decoding (VideoToolbox can't decode in the background).
+	/// Read from the video thread.
+	@ObservationIgnored private var backgrounded = false
+	@ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+	/// We disconnected (or held off a reconnect) while in the background: connect again on return
+	@ObservationIgnored private var resumeInForeground = false
+	@ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
 
 	/// What chiaki's callbacks point at: this session plus which connection they belong to.
 	/// Tearing a connection down makes chiaki send a "stopped" event that reaches the main
@@ -136,16 +144,33 @@ final class StreamSession {
 		self.console = console
 		self.settings = settings
 		self.renderer = MetalRenderer()
+		backgrounded = UIApplication.shared.applicationState == .background
+		let center = NotificationCenter.default
+		lifecycleObservers = [
+			center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+				self?.enterBackground()
+			},
+			center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+				self?.enterForeground()
+			},
+		]
 	}
 
 	deinit {
+		lifecycleObservers.forEach(NotificationCenter.default.removeObserver)
 		teardown()
+		endBackgroundTask()
 	}
 
 	// MARK: - Lifecycle
 
 	func start() {
 		guard handle == nil else { return }
+		// A reconnect that came due while the user is in another app waits for them to come back
+		if backgrounded {
+			resumeInForeground = true
+			return
+		}
 		guard let renderer else {
 			state = .ended(error: "Metal isn't available on this device.")
 			return
@@ -276,7 +301,9 @@ final class StreamSession {
 		sleepWork?.cancel()
 		sleepWork = nil
 		goingToSleep = false
+		resumeInForeground = false
 		teardown()
+		endBackgroundTask()
 		switch state {
 		case .ended, .consoleAsleep: break
 		default: state = .ended(error: nil)
@@ -287,6 +314,65 @@ final class StreamSession {
 	func reconnect() {
 		cancelReconnect()
 		start()
+	}
+
+	// MARK: - Background (main thread)
+
+	/// Switching apps briefly shouldn't cost the connection. iOS gives a backgrounded app
+	/// about 30 seconds: the connection stays up for that long, so coming back is instant.
+	/// If it runs out we disconnect cleanly (so the console lets go of us) and reconnect on return.
+	private func enterBackground() {
+		backgrounded = true
+		releaseInput()
+		guard handle != nil, backgroundTask == .invalid else { return }
+		backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep the stream connected") { [weak self] in
+			self?.backgroundTimeExpired()
+		}
+		log.notice("In the background, keeping the stream connected")
+	}
+
+	private func enterForeground() {
+		backgrounded = false
+		endBackgroundTask()
+		if resumeInForeground {
+			resumeInForeground = false
+			log.notice("Back from the background, reconnecting")
+			start()
+		}
+		// Otherwise the connection is still up: unpausing (from the view) asks for a fresh keyframe
+	}
+
+	private func backgroundTimeExpired() {
+		if handle != nil, !goingToSleep {
+			log.notice("Background time ran out, disconnecting until the app returns")
+			let wasPlaying: Bool
+			switch state {
+			case .streaming, .reconnecting: wasPlaying = true
+			default: wasPlaying = false
+			}
+			teardown()
+			resumeInForeground = true
+			if wasPlaying {
+				reconnectAttempt = 1
+				state = .reconnecting(attempt: 1)
+			}
+		}
+		endBackgroundTask()
+	}
+
+	private func endBackgroundTask() {
+		guard backgroundTask != .invalid else { return }
+		UIApplication.shared.endBackgroundTask(backgroundTask)
+		backgroundTask = .invalid
+	}
+
+	/// Lets go of every button, stick and touch, so nothing stays held on the console
+	/// while we can't see the controller (iOS doesn't send controller input to background apps)
+	private func releaseInput() {
+		physicalPad = CKPadState()
+		resetScreenInput()
+		for slot in touchIDs.keys { handleTouch(.up(slot: slot)) }
+		sendPad()
 	}
 
 	private func cancelReconnect() {
@@ -479,7 +565,9 @@ final class StreamSession {
 			lostFrames &+= lost
 			renderer?.noteLostFrames()
 		}
-		guard let decoder else { return true }
+		// Background decoding fails, and each failure would ask for another keyframe.
+		// Coming back unpauses the stream, which asks for one.
+		guard let decoder, !backgrounded else { return true }
 		return decoder.decode(buf, count: size)
 	}
 
