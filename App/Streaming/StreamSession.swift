@@ -31,6 +31,25 @@ struct StreamStats: Equatable {
 	var generateMs: Double = 0
 	/// Extra frame generation detail, e.g. a stepped-down quality level
 	var frameGenStatus: String?
+	/// Network smoothing (nil when off): late packets, freezes ridden through, etc.
+	var smoothing: SmoothingStats?
+}
+
+/// Network smoothing counters. Totals since connecting, except the current wait and depth.
+struct SmoothingStats: Equatable {
+	/// Video packets that turned up after we'd stopped waiting, and ones given up on
+	var packetsLate = 0
+	var packetsSkipped = 0
+	/// Current wait for a missing video packet
+	var waitMs: Double = 0
+	/// Frames error correction couldn't rebuild (each would have frozen the picture without smoothing)
+	var fecFailures = 0
+	/// Frames decoded against an older frame because theirs was lost
+	var framesPatched = 0
+	/// Frames held back right now, dropped to keep the delay bounded, and times the buffer ran dry
+	var heldFrames = 0
+	var droppedFrames = 0
+	var underruns = 0
 }
 
 /// One Remote Play connection: chiaki session + decoder + renderer + audio + input.
@@ -147,6 +166,7 @@ final class StreamSession {
 		decoder.onFrame = { [weak renderer] frame in renderer?.display(frame) }
 		self.decoder = decoder
 		configureRenderer()
+		renderer.resetSmoothing()
 		renderer.setPaused(paused)
 		lastGenerated = renderer.generatedFrames
 		lastSkipped = renderer.skippedFrames
@@ -167,6 +187,7 @@ final class StreamSession {
 		config.packet_loss_max = 0.05
 		config.verbose_log = false
 		config.enable_takion_v20 = settings.takionV20
+		config.network_smoothing = settings.networkSmoothing
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
 		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
@@ -314,7 +335,7 @@ final class StreamSession {
 		let needsReconnect =
 			new.resolution != settings.resolution || new.fps != settings.fps || new.bitrateMbps != settings.bitrateMbps
 			|| new.effectiveCodec != settings.effectiveCodec || new.hdr != settings.hdr
-			|| new.takionV20 != settings.takionV20
+			|| new.takionV20 != settings.takionV20 || new.networkSmoothing != settings.networkSmoothing
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.rumble.enabled = new.rumble
@@ -336,7 +357,9 @@ final class StreamSession {
 		renderer?.configure(
 			hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling,
 			frameGeneration: frameGenerationActive, fps: settings.fps,
-			frameCapture: settings.frameCapture)
+			frameCapture: settings.frameCapture,
+			smoothing: settings.networkSmoothing,
+			screenHz: settings.highRefreshDisplay ? UIScreen.main.maximumFramesPerSecond : 60)
 	}
 
 	/// Debug: saves the last few seconds of frames (see FrameCapture)
@@ -589,6 +612,22 @@ final class StreamSession {
 			s.rttMs = ck_session_rtt_ms(handle)
 			s.packetLoss = ck_session_packet_loss(handle)
 			s.takionVersion = Int(ck_session_takion_version(handle))
+			if settings.networkSmoothing {
+				var net = CKNetStats()
+				ck_session_net_stats(handle, &net)
+				var smoothing = SmoothingStats()
+				smoothing.packetsLate = Int(net.packets_late)
+				smoothing.packetsSkipped = Int(net.packets_skipped)
+				smoothing.waitMs = net.reorder_wait_ms
+				smoothing.fecFailures = Int(net.fec_failures)
+				smoothing.framesPatched = Int(net.frames_patched)
+				if let pacer = renderer?.smoothingStats {
+					smoothing.heldFrames = pacer.depth
+					smoothing.droppedFrames = pacer.dropped
+					smoothing.underruns = pacer.underruns
+				}
+				s.smoothing = smoothing
+			}
 		}
 		s.width = decoder.dimensions.width
 		s.height = decoder.dimensions.height

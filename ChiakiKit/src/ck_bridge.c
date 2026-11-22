@@ -604,6 +604,7 @@ CKSession *ck_session_create(const CKSessionConfig *config, const CKSessionCallb
 	info.packet_loss_max = config->packet_loss_max > 0 ? config->packet_loss_max : 0.05;
 	info.enable_idr_on_fec_failure = true;
 	info.enable_takion_v20 = config->enable_takion_v20;
+	info.network_smoothing = config->network_smoothing;
 
 	if(chiaki_session_init(&s->session, &info, &s->log) != CHIAKI_ERR_SUCCESS)
 	{
@@ -717,6 +718,28 @@ int ck_session_takion_version(CKSession *s)
 		return 0;
 	uint8_t version = s->session.stream_connection.takion.version;
 	return (version >= 7 && version <= 20) ? version : 0;
+}
+
+void ck_session_net_stats(CKSession *s, CKNetStats *out)
+{
+	if(!out)
+		return;
+	memset(out, 0, sizeof(*out));
+	if(!s || !s->started)
+		return;
+	ChiakiStreamConnection *sc = &s->session.stream_connection;
+	// Counters are written by chiaki's threads without a lock; a torn read only skews a stat.
+	// The video receiver is freed under state_mutex, so hold it while reading that.
+	chiaki_mutex_lock(&sc->state_mutex);
+	if(sc->video_receiver)
+	{
+		out->packets_late = sc->takion.av_packets_late;
+		out->packets_skipped = sc->takion.av_packets_skipped;
+		out->reorder_wait_ms = (double)sc->takion.av_reorder_timeout_us / 1000.0;
+		out->fec_failures = sc->video_receiver->fec_failures;
+		out->frames_patched = sc->video_receiver->frames_patched;
+	}
+	chiaki_mutex_unlock(&sc->state_mutex);
 }
 
 int ck_session_keyboard_set_text(CKSession *s, const char *text)

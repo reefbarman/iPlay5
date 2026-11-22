@@ -118,6 +118,11 @@ struct StreamSettings: Codable, Equatable {
 	/// Experimental: offer the PS5 the newer Takion v20 stream protocol. The console picks;
 	/// it stays on v12 if it doesn't answer. Off keeps the stock chiaki-ng v12 path.
 	var takionV20: Bool = false
+	/// Optional: ride out network hitches at the cost of a little delay while they happen.
+	/// Waits longer for late video packets, keeps the picture moving (briefly smeared)
+	/// instead of freezing after a lost frame, and holds back a frame or two to even out
+	/// uneven arrival (FramePacer). ChiakiKit/patches/0002-network-smoothing.patch.
+	var networkSmoothing: Bool = false
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
@@ -150,6 +155,7 @@ struct StreamSettings: Codable, Equatable {
 		}
 		frameCapture = try c.decodeIfPresent(Bool.self, forKey: .frameCapture) ?? d.frameCapture
 		takionV20 = try c.decodeIfPresent(Bool.self, forKey: .takionV20) ?? d.takionV20
+		networkSmoothing = try c.decodeIfPresent(Bool.self, forKey: .networkSmoothing) ?? d.networkSmoothing
 	}
 }
 

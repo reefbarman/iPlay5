@@ -16,7 +16,8 @@ private struct RenderUniforms {
 	var fullRange: Int32
 }
 
-/// Draws decoded YCbCr frames into a CAMetalLayer as soon as they arrive.
+/// Draws decoded YCbCr frames into a CAMetalLayer as soon as they arrive (or on a
+/// steady clock while network smoothing is holding frames back, see FramePacer).
 ///
 /// SDR uses an 8-bit BT.709 layer. HDR uses a 10-bit BT.2100 PQ layer with EDR
 /// enabled, so the PS5's PQ signal goes to the display untouched and iOS
@@ -57,6 +58,13 @@ final class MetalRenderer {
 	private var lostSinceNew = false
 	/// Debug: the last few seconds of frames shown, for the capture button (nil when off)
 	private var capture: FrameCapture?
+	/// Network smoothing's buffer (nil when off). Guarded by `lock`.
+	private var pacer: FramePacer?
+	/// "Video thread only" state below is touched by whichever thread is drawing: the
+	/// video thread, or the pacer's while it's holding frames back. This keeps them apart.
+	private let renderLock = NSLock()
+	/// Video thread: frames were lost before the next one to be decoded
+	private var pendingLost = false
 	/// Video thread only: new real frames so far, numbering pairs in a capture
 	private var realFrames = 0
 
@@ -113,8 +121,21 @@ final class MetalRenderer {
 
 	/// Frame generation should only be on when the screen can show twice `fps`
 	func configure(
-		hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGeneration: Bool, fps: Int, frameCapture: Bool
+		hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGeneration: Bool, fps: Int, frameCapture: Bool,
+		smoothing: Bool, screenHz: Int
 	) {
+		let pacer = lock.withLock { () -> FramePacer? in
+			if smoothing, self.pacer == nil {
+				self.pacer = FramePacer { [weak self] pixelBuffer, lost in
+					self?.renderPaced(pixelBuffer, lost: lost)
+				}
+			} else if !smoothing, let old = self.pacer {
+				old.stop()
+				self.pacer = nil
+			}
+			return self.pacer
+		}
+		pacer?.configure(fps: fps, screenHz: screenHz)
 		let changed = lock.withLock { () -> Bool in
 			let changed = self.hdrOutput != hdr
 			self.hdrOutput = hdr
@@ -140,6 +161,19 @@ final class MetalRenderer {
 
 	func setPaused(_ paused: Bool) {
 		lock.withLock { self.paused = paused }
+	}
+
+	/// A new connection: the smoothing buffer starts from nothing held back
+	func resetSmoothing() {
+		lock.withLock { pacer }?.reset()
+	}
+
+	/// Network smoothing: frames held back now, frames dropped to keep the delay bounded
+	/// and times the buffer ran dry (totals). nil when smoothing is off.
+	var smoothingStats: (depth: Int, dropped: Int, underruns: Int)? {
+		guard let pacer = lock.withLock({ pacer }) else { return nil }
+		let s = pacer.stats
+		return (pacer.currentDepth, s.dropped, s.underruns)
 	}
 
 	/// Saves the frame capture at the next decoded frame (see FrameCapture)
@@ -179,10 +213,32 @@ final class MetalRenderer {
 	/// The stream lost frames before the next one to be decoded. Video thread
 	/// (decoding is synchronous, so this comes before that frame's `display`).
 	func noteLostFrames() {
-		lostSinceNew = true
+		pendingLost = true
 	}
 
+	/// A decoded frame. Video thread.
 	func display(_ pixelBuffer: CVPixelBuffer) {
+		let lost = pendingLost
+		pendingLost = false
+		if let pacer = lock.withLock({ pacer }), pacer.submit(pixelBuffer, lost: lost) {
+			return
+		}
+		renderLock.withLock {
+			if lost { lostSinceNew = true }
+			render(pixelBuffer)
+		}
+	}
+
+	/// A frame the smoothing buffer held back, now due. Pacer thread.
+	private func renderPaced(_ pixelBuffer: CVPixelBuffer, lost: Bool) {
+		renderLock.withLock {
+			if lost { lostSinceNew = true }
+			render(pixelBuffer)
+		}
+	}
+
+	/// Call with `renderLock` held
+	private func render(_ pixelBuffer: CVPixelBuffer) {
 		lock.lock()
 		let layer = self.layer
 		let target = drawableSize

@@ -59,9 +59,15 @@ struct StreamSettingsForm: View {
 		}
 
 		Section {
-			Toggle("Takion v20 protocol (experimental)", isOn: $settings.takionV20)
+			Toggle("Smooth network hiccups", isOn: $settings.networkSmoothing)
 		} header: {
 			Text("Network")
+		} footer: {
+			Text("For Wi-Fi that stutters. Waits a little longer for late video, keeps the picture moving (briefly smeared) instead of freezing when a frame is lost, and evens out uneven frames by holding one or two back. That adds up to about 17 ms per frame held, only while the network is acting up, and goes back to normal once it's calm. The stats overlay shows what it's doing. Changing this reconnects the stream.")
+		}
+
+		Section {
+			Toggle("Takion v20 protocol (experimental)", isOn: $settings.takionV20)
 		} footer: {
 			Text("Offers the PS5 the newer stream protocol that recent official apps use. The PS5 decides; if it doesn't answer, the stream stays on the usual protocol. There's no measured latency gain yet, so compare with it off. The stats overlay shows which one is in use. Changing this reconnects the stream.")
 		}

@@ -17,6 +17,9 @@
 #   patches/*.patch are applied to the copy (the submodule stays pristine).
 #   0001-takion-v20.patch adds the opt-in Takion v20 mode, ported from P5M
 #   (https://github.com/beecrepaldi-afk/P5M-mac, AGPL-3.0, mac/TAKION-V20.md).
+#   0002-network-smoothing.patch adds the opt-in network smoothing mode (adaptive
+#   video reorder wait, decoding through a lost frame while waiting for the IDR,
+#   and the counters behind ck_session_net_stats). It applies on top of 0001.
 #   Regenerate a patch against a pristine copy of vendor/chiaki-ng/lib with
 #   `diff -ruN a b` (paths a/src/..., applied with patch -p1).
 
