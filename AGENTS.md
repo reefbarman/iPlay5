@@ -29,4 +29,3 @@ When creating a release:
 
 Write for players, not developers: describe behaviour, not internals. Leave out `docs:` and `chore:` commits unless they affect users. Omit empty sections.
 
-This repo is owned by the personal `reefbarman` account. Confirm `gh api user --jq .login` returns `reefbarman` before editing a release.
