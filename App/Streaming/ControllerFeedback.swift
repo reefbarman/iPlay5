@@ -176,7 +176,7 @@ final class ControllerFeedback {
 			}
 			if handles.isEmpty { phone = Motor.phone(queue: queue) }
 			startWatchdog()
-			let summary = "\(handles.count) rumble motor(s), \(triggerMotors.count) trigger motor(s), phone haptics \(phone != nil ? "yes" : "no")"
+			let summary = "\(handles.count) rumble motor(s), \(triggerMotors.count) trigger motor(s), phone haptics \(phone != nil ? "yes" : "no"), controller haptics [\(localities.map(\.rawValue).sorted().joined(separator: ", "))]"
 			return (summary, triggerMotors.count == 2 || phone != nil)
 		}
 		emulatesTriggers = emulates
@@ -473,22 +473,35 @@ final class ControllerFeedback {
 	}
 }
 
-/// One haptic actuator: a looping continuous pattern whose intensity and
-/// sharpness are changed as values arrive, which is cheaper than scheduling
+/// One haptic actuator: a continuous event whose intensity (and, on the phone,
+/// sharpness) is changed as values arrive, which is cheaper than scheduling
 /// new patterns. Used only on the feedback queue.
+///
+/// Controller engines are driven the way SDL drives them, which is known to work
+/// on a DualSense: one endless event, intensity only, played only while there's
+/// something to feel. The phone gets a looping pattern with sharpness as well.
 private final class Motor {
 	private let engine: CHHapticEngine
 	private let queue: DispatchQueue
-	private var player: CHHapticAdvancedPatternPlayer?
+	private let name: String
+	/// A game controller's actuator rather than the phone's Taptic Engine
+	private let isController: Bool
+	private var player: CHHapticPatternPlayer?
+	/// The player is running (controllers stop it at zero)
+	private var playing = false
 	private var intensity: Float = 0
 	private var sharpness: Float = 0.5
 	private var needsRestart = false
 	private var lastRestart: CFTimeInterval = 0
 	private var stopped = false
+	private var loggedError = false
 
 	convenience init?(haptics: GCDeviceHaptics, locality: GCHapticsLocality, queue: DispatchQueue) {
-		guard let engine = haptics.createEngine(withLocality: locality) else { return nil }
-		self.init(engine: engine, name: locality.rawValue, queue: queue)
+		guard let engine = haptics.createEngine(withLocality: locality) else {
+			log.error("Haptics (\(locality.rawValue, privacy: .public)): the controller has no engine for it")
+			return nil
+		}
+		self.init(engine: engine, name: locality.rawValue, isController: true, queue: queue)
 	}
 
 	/// The phone's Taptic Engine, if it has one
@@ -498,16 +511,18 @@ private final class Motor {
 			let engine = try CHHapticEngine()
 			// Don't touch the audio session the game audio runs on
 			engine.playsHapticsOnly = true
-			return Motor(engine: engine, name: "phone", queue: queue)
+			return Motor(engine: engine, name: "phone", isController: false, queue: queue)
 		} catch {
 			log.error("Phone haptics: \(error.localizedDescription, privacy: .public)")
 			return nil
 		}
 	}
 
-	init?(engine: CHHapticEngine, name: String, queue: DispatchQueue) {
+	init?(engine: CHHapticEngine, name: String, isController: Bool, queue: DispatchQueue) {
 		self.engine = engine
 		self.queue = queue
+		self.name = name
+		self.isController = isController
 		engine.isAutoShutdownEnabled = false
 		// Interruptions (backgrounding, a server reset): start again on the next update
 		engine.stoppedHandler = { [weak self] _ in queue.async { self?.needsRestart = true } }
@@ -522,6 +537,16 @@ private final class Motor {
 
 	private func start() throws {
 		try engine.start()
+		playing = false
+		if isController {
+			let event = CHHapticEvent(
+				eventType: .hapticContinuous,
+				parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 1)],
+				relativeTime: 0, duration: TimeInterval(GCHapticDurationInfinite))
+			player = try engine.makePlayer(with: CHHapticPattern(events: [event], parameters: []))
+			try update()
+			return
+		}
 		let event = CHHapticEvent(
 			eventType: .hapticContinuous,
 			parameters: [
@@ -533,6 +558,7 @@ private final class Motor {
 		try player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
 		try player.start(atTime: CHHapticTimeImmediate)
 		self.player = player
+		playing = true
 	}
 
 	private var parameters: [CHHapticDynamicParameter] {
@@ -541,6 +567,35 @@ private final class Motor {
 			// Added to the event's 0.5
 			CHHapticDynamicParameter(parameterID: .hapticSharpnessControl, value: sharpness - 0.5, relativeTime: 0),
 		]
+	}
+
+	/// Sends the current values to the player
+	private func update() throws {
+		guard let player else { return }
+		guard isController else {
+			return try player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
+		}
+		guard intensity > 0 else {
+			if playing {
+				playing = false
+				try player.stop(atTime: CHHapticTimeImmediate)
+			}
+			return
+		}
+		if !playing {
+			try player.start(atTime: CHHapticTimeImmediate)
+			playing = true
+		}
+		try player.sendParameters(
+			[CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: intensity, relativeTime: 0)],
+			atTime: CHHapticTimeImmediate)
+	}
+
+	/// Only the first failure, so a broken actuator doesn't flood the log every 10 ms
+	private func logOnce(_ error: Error) {
+		guard !loggedError else { return }
+		loggedError = true
+		log.error("Haptics (\(self.name, privacy: .public)) update failed: \(error.localizedDescription, privacy: .public)")
 	}
 
 	/// Restarts after an interruption, at most once a second
@@ -568,18 +623,21 @@ private final class Motor {
 		self.intensity = intensity
 		self.sharpness = sharpness
 		guard ensureRunning() else { return }
-		try? player?.sendParameters(parameters, atTime: CHHapticTimeImmediate)
+		do {
+			try update()
+		} catch {
+			logOnce(error)
+		}
 	}
 
 	/// A single short click
 	func tap(intensity: Float, sharpness: Float) {
 		guard intensity > 0, ensureRunning() else { return }
-		let event = CHHapticEvent(
-			eventType: .hapticTransient,
-			parameters: [
-				CHHapticEventParameter(parameterID: .hapticIntensity, value: min(1, intensity)),
-				CHHapticEventParameter(parameterID: .hapticSharpness, value: min(1, max(0, sharpness))),
-			], relativeTime: 0)
+		var parameters = [CHHapticEventParameter(parameterID: .hapticIntensity, value: min(1, intensity))]
+		if !isController {
+			parameters.append(CHHapticEventParameter(parameterID: .hapticSharpness, value: min(1, max(0, sharpness))))
+		}
+		let event = CHHapticEvent(eventType: .hapticTransient, parameters: parameters, relativeTime: 0)
 		guard let pattern = try? CHHapticPattern(events: [event], parameters: []),
 			let player = try? engine.makePlayer(with: pattern)
 		else { return }
@@ -588,7 +646,8 @@ private final class Motor {
 
 	func stop() {
 		stopped = true
-		try? player?.stop(atTime: CHHapticTimeImmediate)
+		if playing { try? player?.stop(atTime: CHHapticTimeImmediate) }
+		playing = false
 		player = nil
 		engine.stop()
 	}
