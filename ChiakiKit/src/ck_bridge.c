@@ -461,6 +461,17 @@ static bool video_cb(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool fr
 	return s->cb.on_video(s->cb.user, buf, buf_size, frames_lost, frame_recovered);
 }
 
+static uint8_t ck_intensity(ChiakiDualSenseEffectIntensity intensity)
+{
+	switch(intensity)
+	{
+		case Off: return CK_INTENSITY_OFF;
+		case Weak: return CK_INTENSITY_WEAK;
+		case Medium: return CK_INTENSITY_MEDIUM;
+		default: return CK_INTENSITY_STRONG;
+	}
+}
+
 static void event_cb(ChiakiEvent *event, void *user)
 {
 	CKSession *s = user;
@@ -508,6 +519,28 @@ static void event_cb(ChiakiEvent *event, void *user)
 				s->cb.on_trigger_effects(s->cb.user,
 					event->trigger_effects.type_left, event->trigger_effects.left,
 					event->trigger_effects.type_right, event->trigger_effects.right);
+			break;
+		case CHIAKI_EVENT_MOTION_RESET:
+			// The console asked to recentre motion (e.g. a game's "reset view")
+			pthread_mutex_lock(&s->state_mutex);
+			chiaki_orientation_tracker_init(&s->orient);
+			pthread_mutex_unlock(&s->state_mutex);
+			break;
+		case CHIAKI_EVENT_LED_COLOR:
+			if(s->cb.on_pad_info)
+				s->cb.on_pad_info(s->cb.user, CK_PAD_INFO_LIGHTBAR, event->led_state[0], event->led_state[1], event->led_state[2]);
+			break;
+		case CHIAKI_EVENT_PLAYER_INDEX:
+			if(s->cb.on_pad_info)
+				s->cb.on_pad_info(s->cb.user, CK_PAD_INFO_PLAYER, event->player_index, 0, 0);
+			break;
+		case CHIAKI_EVENT_HAPTIC_INTENSITY:
+			if(s->cb.on_pad_info)
+				s->cb.on_pad_info(s->cb.user, CK_PAD_INFO_HAPTIC_INTENSITY, ck_intensity(event->intensity), 0, 0);
+			break;
+		case CHIAKI_EVENT_TRIGGER_INTENSITY:
+			if(s->cb.on_pad_info)
+				s->cb.on_pad_info(s->cb.user, CK_PAD_INFO_TRIGGER_INTENSITY, ck_intensity(event->intensity), 0, 0);
 			break;
 		default:
 			break;

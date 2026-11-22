@@ -235,20 +235,29 @@ final class StreamSession {
 		}
 		callbacks.on_rumble = { user, left, right in
 			guard let user else { return }
-			Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.handleRumble(left, right)
+			Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.input.feedback.rumble(left: left, right: right)
 		}
 		callbacks.on_trigger_effects = { user, tl, l, tr, r in
 			guard let user, let l, let r else { return }
-			let left = Array(UnsafeBufferPointer(start: l, count: 10))
-			let right = Array(UnsafeBufferPointer(start: r, count: 10))
-			let session = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session
+			let left = TriggerEffect(type: tl, data: Array(UnsafeBufferPointer(start: l, count: 10)))
+			let right = TriggerEffect(type: tr, data: Array(UnsafeBufferPointer(start: r, count: 10)))
+			let connection = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue()
 			DispatchQueue.main.async {
-				session.input.applyTriggerEffect(typeLeft: tl, left: left, typeRight: tr, right: right)
+				guard connection.id == connection.session.connectionID else { return }
+				connection.session.input.feedback.setTriggerEffects(left: left, right: right)
 			}
 		}
 		callbacks.on_haptics = { user, samples, frames in
 			guard let user, let samples else { return }
-			Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.handleHaptics(samples, Int(frames))
+			Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.input.feedback.haptics(samples, frames: Int(frames))
+		}
+		callbacks.on_pad_info = { user, type, a, b, c in
+			guard let user else { return }
+			let connection = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue()
+			DispatchQueue.main.async {
+				guard connection.id == connection.session.connectionID else { return }
+				connection.session.input.feedback.padInfo(type, a, b, c)
+			}
 		}
 		callbacks.on_log = { _, level, message in
 			guard let message else { return }
@@ -270,7 +279,7 @@ final class StreamSession {
 
 		input.selectIsTouchpad = settings.selectIsTouchpad
 		input.phoneMotionEnabled = settings.phoneMotion
-		input.rumble.enabled = settings.rumble
+		input.feedback.rumbleEnabled = settings.rumble
 		input.onPad = { [weak self] pad in
 			self?.physicalPad = pad
 			self?.sendPad()
@@ -425,7 +434,7 @@ final class StreamSession {
 			|| new.takionV20 != settings.takionV20 || new.networkSmoothing != settings.networkSmoothing
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
-		input.rumble.enabled = new.rumble
+		input.feedback.rumbleEnabled = new.rumble
 		renderer?.setDisplayMode(new.displayMode)
 		if needsReconnect, handle != nil || waitingToApplySettings, !goingToSleep {
 			restartForSettings()
@@ -571,21 +580,6 @@ final class StreamSession {
 		return decoder.decode(buf, count: size)
 	}
 
-	private func handleRumble(_ left: UInt8, _ right: UInt8) {
-		input.rumble.set(left: left, right: right)
-	}
-
-	private func handleHaptics(_ samples: UnsafePointer<Int16>, _ frames: Int) {
-		// Convert DualSense haptic audio (3 kHz stereo PCM) to rumble strength per side
-		var l: Float = 0
-		var r: Float = 0
-		for i in 0..<frames {
-			l = max(l, abs(Float(samples[i * 2])))
-			r = max(r, abs(Float(samples[i * 2 + 1])))
-		}
-		let scale: Float = 255 / 16_384
-		input.rumble.set(left: UInt8(min(255, l * scale)), right: UInt8(min(255, r * scale)))
-	}
 
 	// MARK: - Events (main thread)
 

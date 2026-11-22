@@ -118,6 +118,28 @@ extern "C"
         CK_EVENT_KEYBOARD_CLOSE = 6,
     } CKEventType;
 
+    /// The console's DualSense effect intensity settings (Settings > Accessories > Controllers).
+    typedef enum
+    {
+        CK_INTENSITY_OFF = 0,
+        CK_INTENSITY_WEAK = 1,
+        CK_INTENSITY_MEDIUM = 2,
+        CK_INTENSITY_STRONG = 3,
+    } CKIntensity;
+
+    /// Controller state the console asks for. Only changes are reported.
+    typedef enum
+    {
+        /// a, b, c: lightbar red, green, blue
+        CK_PAD_INFO_LIGHTBAR = 0,
+        /// a: player number the console assigned (1-based, 0 = none)
+        CK_PAD_INFO_PLAYER = 1,
+        /// a: CKIntensity for vibration/haptics
+        CK_PAD_INFO_HAPTIC_INTENSITY = 2,
+        /// a: CKIntensity for trigger effects
+        CK_PAD_INFO_TRIGGER_INTENSITY = 3,
+    } CKPadInfoType;
+
     typedef struct
     {
         /// One encoded access unit in Annex-B format. Return false to request an IDR.
@@ -128,6 +150,9 @@ extern "C"
         void (*on_trigger_effects)(void *user, uint8_t type_left, const uint8_t left[10], uint8_t type_right, const uint8_t right[10]);
         /// DualSense haptics as 16-bit stereo PCM at 3 kHz.
         void (*on_haptics)(void *user, const int16_t *samples, size_t frames);
+        /// Lightbar colour, player LEDs and effect intensity settings (see CKPadInfoType).
+        /// Motion resets are handled inside the bridge.
+        void (*on_pad_info)(void *user, CKPadInfoType type, uint8_t a, uint8_t b, uint8_t c);
         CKLogCallback on_log;
         void *user;
     } CKSessionCallbacks;

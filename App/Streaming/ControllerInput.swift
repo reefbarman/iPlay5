@@ -1,5 +1,4 @@
 import ChiakiKit
-import CoreHaptics
 import CoreMotion
 import GameController
 import UIKit
@@ -38,7 +37,8 @@ final class ControllerInput {
 	private var comboTimer: Timer?
 	private var lastPad = CKPadState()
 
-	let rumble = RumbleOutput()
+	/// Rumble, haptics, adaptive triggers, lightbar and player LEDs
+	let feedback = ControllerFeedback()
 
 	init() {
 		motionQueue.maxConcurrentOperationCount = 1
@@ -72,7 +72,8 @@ final class ControllerInput {
 		controllerName = nil
 		lastPad = CKPadState()
 		releaseTouchpad()
-		rumble.detach()
+		feedback.detach()
+		feedback.reset()
 	}
 
 	// MARK: - Controller selection
@@ -101,7 +102,7 @@ final class ControllerInput {
 		}
 		controller = next
 		controllerName = next?.vendorName
-		rumble.attach(next)
+		feedback.attach(next)
 		guard let next, let pad = next.extendedGamepad else {
 			lastPad = CKPadState()
 			onPad?(lastPad)
@@ -179,6 +180,7 @@ final class ControllerInput {
 
 		lastPad = state
 		onPad?(state)
+		feedback.triggersMoved(left: pad.leftTrigger.value, right: pad.rightTrigger.value)
 		updateMenuCombo(select: selectPressed, start: pad.buttonMenu.isPressed)
 	}
 
@@ -275,110 +277,5 @@ final class ControllerInput {
 
 	private static func nowMicros() -> UInt32 {
 		UInt32(truncatingIfNeeded: UInt64(CACurrentMediaTime() * 1_000_000))
-	}
-
-	// MARK: - Adaptive triggers
-
-	/// Applies a PS5 trigger effect to a DualSense. Decodes the common effect
-	/// types approximately; anything unrecognised turns the trigger off.
-	func applyTriggerEffect(typeLeft: UInt8, left: [UInt8], typeRight: UInt8, right: [UInt8]) {
-		guard let ds = controller?.extendedGamepad as? GCDualSenseGamepad else { return }
-		Self.apply(type: typeLeft, data: left, to: ds.leftTrigger)
-		Self.apply(type: typeRight, data: right, to: ds.rightTrigger)
-	}
-
-	private static func apply(type: UInt8, data d: [UInt8], to trigger: GCDualSenseAdaptiveTrigger) {
-		guard d.count >= 10 else { return }
-		func zones() -> [Int] {
-			let mask = Int(d[0]) | Int(d[1]) << 8
-			return (0..<10).filter { mask & (1 << $0) != 0 }
-		}
-		func strengths() -> [Float] {
-			let packed = UInt64(d[2]) | UInt64(d[3]) << 8 | UInt64(d[4]) << 16 | UInt64(d[5]) << 24
-			return (0..<10).map { Float((packed >> (3 * UInt64($0))) & 0x7) }
-		}
-		switch type {
-		case 0x21:  // feedback (per-zone resistance)
-			let z = zones()
-			guard let first = z.first else { return trigger.setModeOff() }
-			let s = strengths()
-			let avg = z.map { s[$0] + 1 }.reduce(0, +) / Float(z.count) / 8
-			trigger.setModeFeedbackWithStartPosition(Float(first) / 9, resistiveStrength: avg)
-		case 0x25:  // weapon (resistance that breaks at a point)
-			let z = zones()
-			guard z.count >= 2 else { return trigger.setModeOff() }
-			trigger.setModeWeaponWithStartPosition(Float(z[0]) / 9, endPosition: Float(z[z.count - 1]) / 9, resistiveStrength: (Float(d[2]) + 1) / 8)
-		case 0x26:  // vibration
-			let z = zones()
-			guard let first = z.first else { return trigger.setModeOff() }
-			let s = strengths()
-			let amp = z.map { s[$0] + 1 }.reduce(0, +) / Float(z.count) / 8
-			trigger.setModeVibrationWithStartPosition(Float(first) / 9, amplitude: amp, frequency: Float(d[8]) / 255)
-		case 0x01:  // legacy continuous resistance
-			trigger.setModeFeedbackWithStartPosition(Float(d[0]) / 255, resistiveStrength: Float(d[1]) / 255)
-		case 0x02:  // legacy section resistance
-			trigger.setModeWeaponWithStartPosition(Float(d[0]) / 255, endPosition: Float(d[1]) / 255, resistiveStrength: 1)
-		case 0x06:  // legacy vibration
-			trigger.setModeVibrationWithStartPosition(Float(d[2]) / 255, amplitude: Float(d[1]) / 255, frequency: Float(d[0]) / 255)
-		default:
-			trigger.setModeOff()
-		}
-	}
-}
-
-/// Rumble through the controller's haptic motors (if it has any).
-///
-/// Uses one continuous haptic player per side and changes its intensity as
-/// PS5 rumble values arrive, which is cheaper than scheduling new patterns.
-final class RumbleOutput {
-	private var engines: [CHHapticEngine] = []
-	private var players: [CHHapticAdvancedPatternPlayer] = []
-	var enabled = true
-
-	func attach(_ controller: GCController?) {
-		detach()
-		guard let haptics = controller?.haptics else { return }
-		let localities: [GCHapticsLocality] =
-			haptics.supportedLocalities.contains(.leftHandle) && haptics.supportedLocalities.contains(.rightHandle)
-			? [.leftHandle, .rightHandle] : [.default]
-		for locality in localities {
-			guard let engine = haptics.createEngine(withLocality: locality) else { continue }
-			do {
-				try engine.start()
-				let event = CHHapticEvent(
-					eventType: .hapticContinuous,
-					parameters: [
-						CHHapticEventParameter(parameterID: .hapticIntensity, value: 1),
-						CHHapticEventParameter(parameterID: .hapticSharpness, value: locality == .rightHandle ? 0.8 : 0.3),
-					], relativeTime: 0, duration: 30)
-				let pattern = try CHHapticPattern(events: [event], parameters: [])
-				let player = try engine.makeAdvancedPlayer(with: pattern)
-				player.loopEnabled = true
-				try player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)], atTime: CHHapticTimeImmediate)
-				try player.start(atTime: CHHapticTimeImmediate)
-				engines.append(engine)
-				players.append(player)
-			} catch {
-				log.error("Haptics: \(error.localizedDescription, privacy: .public)")
-			}
-		}
-	}
-
-	func detach() {
-		players.forEach { try? $0.stop(atTime: CHHapticTimeImmediate) }
-		engines.forEach { $0.stop() }
-		players = []
-		engines = []
-	}
-
-	/// left = low frequency (heavy) motor, right = high frequency (light) motor, 0...255.
-	func set(left: UInt8, right: UInt8) {
-		guard enabled, !players.isEmpty else { return }
-		let l = Float(left) / 255
-		let r = Float(right) / 255
-		let values = players.count == 2 ? [l, r] : [max(l, r)]
-		for (player, value) in zip(players, values) {
-			try? player.sendParameters([CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: value, relativeTime: 0)], atTime: CHHapticTimeImmediate)
-		}
 	}
 }
