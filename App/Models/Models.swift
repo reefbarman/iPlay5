@@ -109,7 +109,7 @@ enum VirtualControlsMode: String, Codable, CaseIterable, Identifiable {
 }
 
 enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
-	case bilinear, sharp, metalFX
+	case bilinear, sharp, metalFX, metalFX4K
 
 	var id: Self { self }
 	var label: String {
@@ -117,8 +117,10 @@ enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
 		case .bilinear: "Bilinear"
 		case .sharp: "Sharp"
 		case .metalFX: "MetalFX Spatial"
+		case .metalFX4K: "MetalFX 4K"
 		}
 	}
+	var usesMetalFX: Bool { self == .metalFX || self == .metalFX4K }
 }
 
 struct StreamSettings: Codable, Equatable {

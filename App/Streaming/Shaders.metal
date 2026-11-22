@@ -140,3 +140,13 @@ fragment float4 stream_scaled_fragment(VertexOut in [[stage_in]],
                                        constant int2 &origin [[buffer(0)]]) {
 	return float4(color.read(uint2(int2(in.position.xy) - origin)).rgb, 1.0);
 }
+
+// MetalFX 4K: shrink onto the screen by averaging four taps across each screen pixel's footprint
+fragment float4 stream_downsample_fragment(VertexOut in [[stage_in]], texture2d<float> color [[texture(0)]]) {
+	constexpr sampler s(filter::linear, address::clamp_to_edge);
+	float2 dx = dfdx(in.uv) * 0.25;
+	float2 dy = dfdy(in.uv) * 0.25;
+	float3 c = color.sample(s, in.uv - dx - dy).rgb + color.sample(s, in.uv + dx - dy).rgb
+	         + color.sample(s, in.uv - dx + dy).rgb + color.sample(s, in.uv + dx + dy).rgb;
+	return float4(c * 0.25, 1.0);
+}
