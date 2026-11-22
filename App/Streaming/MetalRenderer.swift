@@ -85,6 +85,12 @@ final class MetalRenderer {
 	/// repeats, and how many stream frames ago that frame came
 	private var lastSignature: [UInt8] = []
 	private var framesSinceNew = 1
+	/// Video thread only: whether each of the last 16 stream frames looked like
+	/// a repeat of the one before (bit 0 newest), and whether repeats are being
+	/// dropped because the stream settled into a 30 fps pattern (see `noteRepeat`)
+	private var repeatHistory: UInt16 = 0
+	private var repeatHistoryCount = 0
+	private var dropRepeats = false
 	/// Video thread only: when the last new frame arrived, and whether the
 	/// stream lost frames since (see `noteLostFrames`)
 	private var lastNewFrameAt: CFTimeInterval = 0
@@ -354,6 +360,9 @@ final class MetalRenderer {
 			activeGenerator = generator
 			lastSignature = []
 			framesSinceNew = 1
+			repeatHistory = 0
+			repeatHistoryCount = 0
+			dropRepeats = false
 			lastNewFrameAt = 0
 			lostSinceNew = false
 			lock.withLock { self.generateMs = 0 }
@@ -378,7 +387,9 @@ final class MetalRenderer {
 		// uneven), so while generating, repeats are dropped and the in-between
 		// goes halfway between the two different frames, spread over the time
 		// the game frame lasts. Up to two repeats in a row (20 fps); after that
-		// the frame counts as new, so a still scene keeps updating.
+		// the frame counts as new, so a still scene keeps updating. Only once the
+		// stream shows a steady new/repeat pattern: in a 60 fps game a frame with
+		// little motion can look like a repeat, and dropping it is a visible hitch.
 		var gap = interval
 		// Frames lost, or a hitch (the console or network stalled): the last
 		// real frame and this one can be several game frames apart, too far
@@ -387,7 +398,9 @@ final class MetalRenderer {
 		var discontinuity = false
 		if generator != nil {
 			let signature = Self.lumaSignature(pixelBuffer, tenBit: tenBit)
-			if framesSinceNew < 3, Self.isRepeat(signature, of: lastSignature) {
+			let looksRepeated = Self.isRepeat(signature, of: lastSignature)
+			noteRepeat(looksRepeated)
+			if dropRepeats, looksRepeated, framesSinceNew < 3 {
 				framesSinceNew += 1
 				repeatedFrames += 1
 				capture?.note(.repeated, pair: realFrames)
@@ -569,6 +582,26 @@ final class MetalRenderer {
 				size: CGSize(width: drawable.texture.width, height: drawable.texture.height))
 		}
 		presentedFrames += 1
+	}
+
+	/// Tracks whether recent stream frames looked like repeats, and turns repeat
+	/// dropping on when they alternate new/repeat (a 30 fps game in a 60 fps
+	/// stream) and off when they stop. A 60 fps game never alternates: its odd
+	/// look-alike frame is isolated, and a still scene is a run of look-alikes.
+	/// Video thread only.
+	private func noteRepeat(_ repeated: Bool) {
+		repeatHistory = repeatHistory << 1 | (repeated ? 1 : 0)
+		repeatHistoryCount = min(repeatHistoryCount + 1, 16)
+		guard repeatHistoryCount == 16 else { return }
+		// Changes between neighbouring frames, out of 15; 30 fps gives about 15
+		let changes = ((repeatHistory ^ (repeatHistory >> 1)) & 0x7FFF).nonzeroBitCount
+		if !dropRepeats, changes >= 12 {
+			dropRepeats = true
+			log.notice("Frame gen: stream repeats frames (30 fps game), dropping repeats")
+		} else if dropRepeats, changes < 8 {
+			dropRepeats = false
+			log.notice("Frame gen: stream stopped repeating frames, showing every frame")
+		}
 	}
 
 	/// Luma on a 96x54 grid (8-bit), read straight from the decoded frame
