@@ -143,11 +143,10 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
-			// The transparent frame-generation hotspot would otherwise swallow gameplay touches.
-			if let session, acceptsScreenInput, !showsVirtualControls {
-				frameGenButton(session)
+			if let session, acceptsScreenInput {
+				frameGenButton(session, compact: showsVirtualControls)
 				if session.settings.frameCapture {
-					captureButton(session)
+					captureButton(session, compact: showsVirtualControls)
 				}
 			}
 
@@ -342,15 +341,16 @@ struct StreamView: View {
 	/// button, so a slightly-off tap doesn't land on the touchpad. The label
 	/// fades out after a few seconds but the corner stays tappable: a tap
 	/// while it's hidden just brings it back, the next one toggles it.
-	private func frameGenButton(_ session: StreamSession) -> some View {
+	/// With virtual controls, use a visible button instead of a large transparent hotspot.
+	private func frameGenButton(_ session: StreamSession, compact: Bool) -> some View {
 		let on = settingsStore.settings.frameGeneration
 		let (text, colour): (String, Color) = on ? ("FG on", .green.opacity(0.85)) : ("FG off", .black.opacity(0.45))
 		return Button {
-			if showFGButton {
+			if compact || showFGButton {
 				settingsStore.settings.frameGeneration.toggle()
 				session.apply(settingsStore.settings)
 			}
-			revealFGButton()
+			if !compact { revealFGButton() }
 		} label: {
 			Text(text)
 				.font(.caption.weight(.bold))
@@ -358,22 +358,25 @@ struct StreamView: View {
 				.padding(.horizontal, 10)
 				.frame(minWidth: 52, minHeight: 30)
 				.background(colour, in: Capsule())
-				.opacity(showFGButton ? 1 : 0)
-				.padding(.bottom, 12)
-				.padding(.trailing, 16)
-				.frame(width: 130, height: 90, alignment: .bottomTrailing)
+				.opacity(compact || showFGButton ? 1 : 0)
+				.padding(.bottom, compact ? 0 : 12)
+				.padding(.trailing, compact ? 0 : 16)
+				.frame(width: compact ? 64 : 130, height: compact ? 44 : 90,
+					alignment: compact ? .center : .bottomTrailing)
 				.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel("Frame generation \(on ? "on" : "off"). Tap to turn it \(on ? "off" : "on").")
+		.padding(.bottom, compact ? 4 : 0)
+		.padding(.trailing, compact ? 8 : 0)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-		.ignoresSafeArea()
+		.ignoresSafeArea(.container, edges: compact ? [] : .all)
 	}
 
 	// MARK: - Frame capture (debug, bottom left)
 
 	/// Saves the last few seconds of frames, real and generated, for a closer look
-	private func captureButton(_ session: StreamSession) -> some View {
+	private func captureButton(_ session: StreamSession, compact: Bool) -> some View {
 		Button {
 			session.saveFrameCapture()
 		} label: {
@@ -385,21 +388,25 @@ struct StreamView: View {
 					Text(status)
 						.font(.caption.weight(.semibold))
 						.foregroundStyle(.white)
-						.lineLimit(2)
+						.lineLimit(compact ? 1 : 2)
+						.frame(maxWidth: compact ? 70 : nil, alignment: .leading)
 				}
 			}
 			.padding(.horizontal, 10)
 			.padding(.vertical, 6)
 			.background(.black.opacity(0.45), in: Capsule())
 			.opacity(session.captureStatus == nil ? 0.6 : 1)
-			.padding(.bottom, 12)
-			.padding(.leading, 16)
+			.frame(minWidth: compact ? 44 : nil, minHeight: compact ? 44 : nil)
+			.padding(.bottom, compact ? 0 : 12)
+			.padding(.leading, compact ? 0 : 16)
 			.contentShape(Rectangle())
 		}
 		.buttonStyle(.plain)
 		.accessibilityLabel("Save the last few seconds of frames")
+		.padding(.bottom, compact ? 4 : 0)
+		.padding(.leading, compact ? 8 : 0)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-		.ignoresSafeArea()
+		.ignoresSafeArea(.container, edges: compact ? [] : .all)
 	}
 
 	// MARK: - Heat warning
@@ -629,11 +636,12 @@ struct StreamView: View {
 			Form {
 				Section {
 					Button("Resume") { showMenu = false }
-				if wantsVirtualControls, let session, session.settings.frameCapture {
-					Button("Save the last few seconds of frames") { session.saveFrameCapture() }
-						.disabled(session.captureStatus == "Saving…")
-					if let status = session.captureStatus { Text(status).foregroundStyle(.secondary) }
-				}
+					NavigationLink { ControlsGuideView() } label: {
+						Label("Controls Guide", systemImage: "gamecontroller")
+					}
+					if wantsVirtualControls, let status = session?.captureStatus {
+						Text(status).foregroundStyle(.secondary)
+					}
 					Button("Put console in rest mode") {
 						session?.putConsoleToSleep()
 						showMenu = false
@@ -660,15 +668,15 @@ struct StreamView: View {
 				} header: {
 					Text("Phone")
 				}
-			if let sessionControlsMode, sessionControlsMode != store.settings.virtualControls {
-				Section {
-					LabeledContent("Virtual controls this session", value: sessionControlsMode.label)
-					Button("Use saved virtual controls setting") { self.sessionControlsMode = nil }
+				if let sessionControlsMode, sessionControlsMode != store.settings.virtualControls {
+					Section {
+						LabeledContent("Virtual controls this session", value: sessionControlsMode.label)
+						Button("Use saved virtual controls setting") { self.sessionControlsMode = nil }
+					}
 				}
+				StreamSettingsForm(settings: $store.settings)
 			}
-			StreamSettingsForm(settings: $store.settings)
-		}
-		.navigationTitle(console.name)
+			.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)
 		}
 		.onChange(of: store.settings) { _, new in session?.apply(new) }

@@ -24,15 +24,12 @@ final class VirtualControlsOverlay: UIView {
 		let rounded: Bool
 		let icon: UIImage?
 
-		init(_ label: String, _ rect: CGRect, _ action: Action, rounded: Bool = false, symbol: String? = nil) {
+		init(_ label: String, _ rect: CGRect, _ action: Action, rounded: Bool = false, icon: UIImage? = nil) {
 			self.label = label
 			self.rect = rect
 			self.action = action
 			self.rounded = rounded
-			icon = symbol.flatMap {
-				UIImage(systemName: $0, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))?
-					.withTintColor(.white.withAlphaComponent(0.9), renderingMode: .alwaysOriginal)
-			}
+			self.icon = icon
 		}
 	}
 
@@ -50,6 +47,25 @@ final class VirtualControlsOverlay: UIView {
 	private var pad = VirtualPadState()
 	private static let stickRadius: CGFloat = 42
 
+	// Three upright rays: shorter angled marks flank the tall centre mark.
+	private static let createIcon = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { _ in
+		let strokes = UIBezierPath()
+		strokes.lineWidth = 1.7
+		strokes.lineCapStyle = .round
+		strokes.move(to: CGPoint(x: 4, y: 8))
+		strokes.addLine(to: CGPoint(x: 6.5, y: 13))
+		strokes.move(to: CGPoint(x: 10, y: 5))
+		strokes.addLine(to: CGPoint(x: 10, y: 12))
+		strokes.move(to: CGPoint(x: 16, y: 8))
+		strokes.addLine(to: CGPoint(x: 13.5, y: 13))
+		UIColor.white.withAlphaComponent(0.9).setStroke()
+		strokes.stroke()
+	}
+
+	private static let optionsIcon = UIImage(systemName: "line.3.horizontal",
+		withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))?
+		.withTintColor(.white.withAlphaComponent(0.9), renderingMode: .alwaysOriginal)
+
 	override init(frame: CGRect) {
 		super.init(frame: frame)
 		isOpaque = false
@@ -63,7 +79,8 @@ final class VirtualControlsOverlay: UIView {
 		guard area != safeArea else { return }
 		area = safeArea
 		let x = safeArea.minX + 68, right = safeArea.maxX - 68
-		let row = safeArea.maxY - 111
+		// Keep the D-pad and face buttons above the 44-point bottom shortcut row.
+		let row = safeArea.maxY - 125
 		// Sit just above the D-pad and face buttons, even on the taller inner screen.
 		let shoulders = row - 86
 		let bottom = safeArea.maxY - 26
@@ -89,10 +106,10 @@ final class VirtualControlsOverlay: UIView {
 			button("□", right - 36, row, CK_BUTTON_BOX),
 			button("○", right + 36, row, CK_BUTTON_MOON),
 			button("×", right, row + 36, CK_BUTTON_CROSS),
-			button("L3", x, bottom, CK_BUTTON_L3),
-			button("R3", right, bottom, CK_BUTTON_R3),
-			Control("Create", rect(middle - 32, bottom - 59, 52, 44), .button(CK_BUTTON_SHARE.rawValue), rounded: true, symbol: "square.and.arrow.up"),
-			Control("Options", rect(middle + 32, bottom - 59, 52, 44), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true, symbol: "line.3.horizontal"),
+			button("L3", x + 76, row + 37, CK_BUTTON_L3),
+			button("R3", right - 76, row + 37, CK_BUTTON_R3),
+			Control("Create", rect(middle - 32, bottom, 52, 44), .button(CK_BUTTON_SHARE.rawValue), rounded: true, icon: Self.createIcon),
+			Control("Options", rect(middle + 32, bottom, 52, 44), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true, icon: Self.optionsIcon),
 		]
 		setNeedsDisplay()
 	}

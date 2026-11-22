@@ -97,6 +97,11 @@ struct SettingsView: View {
 		@Bindable var store = store
 		NavigationStack {
 			Form {
+				Section {
+					NavigationLink { ControlsGuideView() } label: {
+						Label("Controls Guide", systemImage: "gamecontroller")
+					}
+				}
 				StreamSettingsForm(settings: $store.settings)
 
 				Section {
