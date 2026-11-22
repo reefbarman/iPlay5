@@ -356,7 +356,7 @@ final class StreamSession {
 
 	private func configureRenderer() {
 		renderer?.configure(
-			hdr: settings.hdr, displayMode: settings.displayMode, bicubic: settings.sharpUpscaling,
+			hdr: settings.hdr, displayMode: settings.displayMode, upscaling: settings.upscaling,
 			frameGeneration: frameGenerationActive, fps: settings.fps,
 			frameCapture: settings.frameCapture,
 			smoothing: settings.networkSmoothing,

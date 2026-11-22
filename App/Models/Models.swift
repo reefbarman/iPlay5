@@ -108,6 +108,19 @@ enum VirtualControlsMode: String, Codable, CaseIterable, Identifiable {
 	}
 }
 
+enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
+	case bilinear, sharp, metalFX
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .bilinear: "Bilinear"
+		case .sharp: "Sharp"
+		case .metalFX: "MetalFX Spatial"
+		}
+	}
+}
+
 struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
 	var fps: Int = 60
@@ -115,7 +128,7 @@ struct StreamSettings: Codable, Equatable {
 	var codec: VideoCodecChoice = .h265
 	var hdr: Bool = false
 	var displayMode: DisplayMode = .fit
-	var sharpUpscaling: Bool = true
+	var upscaling: UpscalingMode = .sharp
 	var showStats: Bool = false
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
@@ -143,8 +156,7 @@ struct StreamSettings: Codable, Equatable {
 
 	init() {}
 
-	/// Older builds stored a mode ("off", "custom" or "flyHigh") instead of a switch
-	private enum LegacyKeys: String, CodingKey { case frameGenMode }
+	private enum LegacyKeys: String, CodingKey { case frameGenMode, sharpUpscaling }
 
 	/// Missing keys keep their defaults, so adding a setting doesn't reset the others
 	init(from decoder: Decoder) throws {
@@ -156,7 +168,12 @@ struct StreamSettings: Codable, Equatable {
 		codec = try c.decodeIfPresent(VideoCodecChoice.self, forKey: .codec) ?? d.codec
 		hdr = try c.decodeIfPresent(Bool.self, forKey: .hdr) ?? d.hdr
 		displayMode = try c.decodeIfPresent(DisplayMode.self, forKey: .displayMode) ?? d.displayMode
-		sharpUpscaling = try c.decodeIfPresent(Bool.self, forKey: .sharpUpscaling) ?? d.sharpUpscaling
+		let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+		if let mode = try? c.decodeIfPresent(UpscalingMode.self, forKey: .upscaling) {
+			upscaling = mode
+		} else if let sharp = try? legacy.decodeIfPresent(Bool.self, forKey: .sharpUpscaling) {
+			upscaling = sharp ? .sharp : .bilinear
+		}
 		showStats = try c.decodeIfPresent(Bool.self, forKey: .showStats) ?? d.showStats
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
@@ -165,7 +182,7 @@ struct StreamSettings: Codable, Equatable {
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 		if let on = try c.decodeIfPresent(Bool.self, forKey: .frameGeneration) {
 			frameGeneration = on
-		} else if let mode = try? decoder.container(keyedBy: LegacyKeys.self).decodeIfPresent(String.self, forKey: .frameGenMode) {
+		} else if let mode = try? legacy.decodeIfPresent(String.self, forKey: .frameGenMode) {
 			frameGeneration = mode != "off"
 		}
 		frameCapture = try c.decodeIfPresent(Bool.self, forKey: .frameCapture) ?? d.frameCapture

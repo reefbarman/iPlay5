@@ -134,3 +134,9 @@ fragment float4 stream_fragment(VertexOut in [[stage_in]],
 
 	return float4(rgb, 1.0);
 }
+
+fragment float4 stream_scaled_fragment(VertexOut in [[stage_in]],
+                                       texture2d<float, access::read> color [[texture(0)]],
+                                       constant int2 &origin [[buffer(0)]]) {
+	return float4(color.read(uint2(int2(in.position.xy) - origin)).rgb, 1.0);
+}

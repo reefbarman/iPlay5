@@ -4,6 +4,12 @@ import SwiftUI
 struct StreamSettingsForm: View {
 	@Binding var settings: StreamSettings
 
+	private var upscalingSelection: Binding<UpscalingMode> {
+		Binding(
+			get: { settings.upscaling == .metalFX && !MetalRenderer.supportsMetalFX ? .sharp : settings.upscaling },
+			set: { settings.upscaling = $0 })
+	}
+
 	var body: some View {
 		Section {
 			Picker("Resolution", selection: $settings.resolution) {
@@ -36,7 +42,11 @@ struct StreamSettingsForm: View {
 			Picker("Picture", selection: $settings.displayMode) {
 				ForEach(DisplayMode.allCases) { Text($0.label).tag($0) }
 			}
-			Toggle("Sharp upscaling", isOn: $settings.sharpUpscaling)
+			Picker("Upscaling", selection: upscalingSelection) {
+				ForEach(UpscalingMode.allCases.filter { $0 != .metalFX || MetalRenderer.supportsMetalFX }) {
+					Text($0.label).tag($0)
+				}
+			}
 			if UIScreen.main.maximumFramesPerSecond > 60 {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 			}
@@ -46,6 +56,9 @@ struct StreamSettingsForm: View {
 			Text("Display")
 		} footer: {
 			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery. Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. The FG button in the bottom-right corner of the stream turns it on and off.")
+			if MetalRenderer.supportsMetalFX {
+				Text("MetalFX Spatial is available when enlarging SDR video. HDR uses Sharp instead.")
+			}
 		}
 
 		Section {

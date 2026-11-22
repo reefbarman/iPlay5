@@ -17,7 +17,7 @@ Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation"
 
 ## Features
 
-- **Picture:** hardware HEVC/H.264 decode drawn with Metal at the panel's native resolution, up to 1080p60 (the PS5's Remote Play limit) and the highest bitrate the console allows. Sharper Catmull-Rom upscaling.
+- **Picture:** hardware HEVC/H.264 decode drawn with Metal at the panel's native resolution, up to 1080p60 (the PS5's Remote Play limit) and the highest bitrate the console allows. Choose Sharp (Catmull-Rom), Bilinear, or MetalFX Spatial upscaling for SDR on supported devices.
 - **HDR:** 10-bit HDR10 straight to the display with EDR. Toggle it per stream.
 - **Fit or Zoom to fill:** see the whole picture with black bars, or fill the screen and crop the overflow.
 - **Controllers:** the controller's home/logo button acts as the PS button, and there's an on-screen PS button for controllers that don't have one (or whose button iOS doesn't pass through, like the GameSir G8+). Phone gyro is used for motion controls when your controller has none. Rumble works, and DualSense touchpad, motion and adaptive triggers are passed through (approximate).

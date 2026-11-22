@@ -1,5 +1,6 @@
 import CoreVideo
 import Metal
+import MetalFX
 import QuartzCore
 import UIKit
 import simd
@@ -23,18 +24,27 @@ private struct RenderUniforms {
 /// enabled, so the PS5's PQ signal goes to the display untouched and iOS
 /// handles the tone mapping for the panel.
 final class MetalRenderer {
+	static let supportsMetalFX = MTLCreateSystemDefaultDevice().map {
+		MTLFXSpatialScalerDescriptor.supportsDevice($0)
+	} ?? false
+
 	let device: MTLDevice
 	private let queue: MTLCommandQueue
 	private let pipelineSDR: MTLRenderPipelineState
 	private let pipelineHDR: MTLRenderPipelineState
+	private let pipelineScaled: MTLRenderPipelineState?
 	private var textureCache: CVMetalTextureCache?
+
+	/// Accessed under renderLock. Also remember unsuccessful configurations so we don't retry every frame.
+	private var spatialSize: SIMD4<Int>?
+	private var spatialScaler: MTLFXSpatialScaler?
 
 	private let lock = NSLock()
 	private weak var layer: CAMetalLayer?
 	private var drawableSize: CGSize = .zero
 	private var hdrOutput = false
 	private var displayMode: DisplayMode = .fit
-	private var bicubic = true
+	private var upscaling: UpscalingMode = .sharp
 	private var paused = false
 	/// One real video frame retained for a native-pixel snapshot, without reading live drawables.
 	private struct ScreenshotFrame {
@@ -102,16 +112,17 @@ final class MetalRenderer {
 		frameGenerator = FrameGenerator(device: device, library: library)
 		if frameGenerator == nil { log.error("Frame generation shaders failed to load") }
 
-		func pipeline(_ format: MTLPixelFormat) -> MTLRenderPipelineState? {
+		func pipeline(_ format: MTLPixelFormat, fragment: String = "stream_fragment") -> MTLRenderPipelineState? {
 			let desc = MTLRenderPipelineDescriptor()
 			desc.vertexFunction = library.makeFunction(name: "stream_vertex")
-			desc.fragmentFunction = library.makeFunction(name: "stream_fragment")
+			desc.fragmentFunction = library.makeFunction(name: fragment)
 			desc.colorAttachments[0].pixelFormat = format
 			return try? device.makeRenderPipelineState(descriptor: desc)
 		}
 		guard let sdr = pipeline(.bgra8Unorm), let hdr = pipeline(.bgr10a2Unorm) else { return nil }
 		pipelineSDR = sdr
 		pipelineHDR = hdr
+		pipelineScaled = Self.supportsMetalFX ? pipeline(.bgra8Unorm, fragment: "stream_scaled_fragment") : nil
 		CVMetalTextureCacheCreate(kCFAllocatorDefault, nil, device, nil, &textureCache)
 	}
 
@@ -129,7 +140,7 @@ final class MetalRenderer {
 
 	/// Frame generation should only be on when the screen can show twice `fps`
 	func configure(
-		hdr: Bool, displayMode: DisplayMode, bicubic: Bool, frameGeneration: Bool, fps: Int, frameCapture: Bool,
+		hdr: Bool, displayMode: DisplayMode, upscaling: UpscalingMode, frameGeneration: Bool, fps: Int, frameCapture: Bool,
 		smoothing: Bool, screenHz: Int
 	) {
 		let pacer = lock.withLock { () -> FramePacer? in
@@ -148,7 +159,7 @@ final class MetalRenderer {
 			let changed = self.hdrOutput != hdr
 			self.hdrOutput = hdr
 			self.displayMode = displayMode
-			self.bicubic = bicubic
+			self.upscaling = upscaling
 			self.frameGeneration = frameGeneration
 			self.frameInterval = 1.0 / Double(max(fps, 1))
 			if frameCapture, capture == nil {
@@ -301,7 +312,7 @@ final class MetalRenderer {
 		let target = drawableSize
 		let hdr = hdrOutput
 		let mode = displayMode
-		let bicubic = self.bicubic
+		let upscaling = self.upscaling
 		let paused = self.paused
 		let frameGeneration = self.frameGeneration
 		let interval = frameInterval
@@ -404,7 +415,22 @@ final class MetalRenderer {
 			ndcScale: ndcScale, uvOrigin: uvOrigin, uvSize: uvSize,
 			lumaSize: SIMD2(videoW, videoH),
 			matrix: bt2020 ? 1 : 0, transferMode: transferMode,
-			bicubic: (bicubic && scale > 1.01) ? 1 : 0, fullRange: fullRange ? 1 : 0)
+			bicubic: (upscaling != .bilinear && scale > 1.01) ? 1 : 0, fullRange: fullRange ? 1 : 0)
+
+		// Scale just the picture, not the black bars. In zoom mode, crop after upscaling.
+		let scaledSize = SIMD2(Int(dw.rounded()), Int(dh.rounded()))
+		let useMetalFX = upscaling == .metalFX && pipelineScaled != nil && !hdr
+			&& scaledSize.x > lumaTex.width && scaledSize.y > lumaTex.height
+		if !useMetalFX {
+			spatialSize = nil
+			spatialScaler = nil
+		}
+
+		func drawFrame(luma: MTLTexture, chroma: MTLTexture, to texture: MTLTexture, in buffer: MTLCommandBuffer) {
+			if useMetalFX, drawMetalFX(luma: luma, chroma: chroma, uniforms: uniforms, size: scaledSize,
+				to: texture, in: buffer) { return }
+			draw(luma: luma, chroma: chroma, uniforms: &uniforms, to: texture, in: buffer)
+		}
 
 		guard var commandBuffer = queue.makeCommandBuffer() else { return }
 
@@ -438,7 +464,7 @@ final class MetalRenderer {
 				{
 					generator.interpolate(
 						previous: (prevLuma, prevChroma), current: (lumaTex, chromaTex), into: commandBuffer)
-					draw(luma: outLuma, chroma: outChroma, uniforms: &uniforms, to: drawable.texture, in: commandBuffer)
+					drawFrame(luma: outLuma, chroma: outChroma, to: drawable.texture, in: commandBuffer)
 					commandBuffer.addCompletedHandler { [weak self] buffer in
 						_ = (previous, luma, chroma)
 						let ms = (buffer.gpuEndTime - buffer.gpuStartTime) * 1000
@@ -483,7 +509,7 @@ final class MetalRenderer {
 			commandBuffer.commit()
 			return
 		}
-		draw(luma: lumaTex, chroma: chromaTex, uniforms: &uniforms, to: drawable.texture, in: commandBuffer)
+		drawFrame(luma: lumaTex, chroma: chromaTex, to: drawable.texture, in: commandBuffer)
 		track(drawable, in: commandBuffer, captureSeq: realSeq, capture: capture)
 		#if targetEnvironment(simulator)
 		// The simulator has no paced presentation, so the real frame just follows the generated one
@@ -549,6 +575,85 @@ final class MetalRenderer {
 		return picked
 	}
 
+	private func drawMetalFX(
+		luma: MTLTexture, chroma: MTLTexture, uniforms: RenderUniforms, size: SIMD2<Int>,
+		to texture: MTLTexture, in commandBuffer: MTLCommandBuffer
+	) -> Bool {
+		// The drawable can still be HDR for a frame after switching back to SDR.
+		guard texture.pixelFormat == .bgra8Unorm, let pipelineScaled else { return false }
+		let dimensions = SIMD4(luma.width, luma.height, size.x, size.y)
+		if spatialSize != dimensions {
+			spatialSize = dimensions
+			spatialScaler = makeSpatialScaler(dimensions)
+		}
+		guard let scaler = spatialScaler, let input = scaler.colorTexture, let output = scaler.outputTexture else {
+			return false
+		}
+
+		var native = uniforms
+		native.ndcScale = .one
+		native.uvOrigin = .zero
+		native.uvSize = .one
+		native.bicubic = 0
+		guard draw(luma: luma, chroma: chroma, uniforms: &native, to: input, in: commandBuffer) else { return false }
+		scaler.encode(commandBuffer: commandBuffer)
+
+		// Centre the output on whole pixels so compositing doesn't filter it a second time.
+		// Positive offsets leave black bars; negative offsets crop to the drawable.
+		guard let encoder = makeDrawEncoder(to: texture, in: commandBuffer) else { return false }
+		let x = (texture.width - output.width) / 2
+		let y = (texture.height - output.height) / 2
+		var origin = SIMD2(Int32(x), Int32(y))
+		encoder.setRenderPipelineState(pipelineScaled)
+		encoder.setScissorRect(MTLScissorRect(x: max(x, 0), y: max(y, 0),
+			width: min(texture.width, output.width), height: min(texture.height, output.height)))
+		encoder.setVertexBytes(&native, length: MemoryLayout<RenderUniforms>.stride, index: 0)
+		encoder.setFragmentBytes(&origin, length: MemoryLayout<SIMD2<Int32>>.stride, index: 0)
+		encoder.setFragmentTexture(output, index: 0)
+		encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+		encoder.endEncoding()
+		return true
+	}
+
+	private func makeSpatialScaler(_ size: SIMD4<Int>) -> MTLFXSpatialScaler? {
+		let desc = MTLFXSpatialScalerDescriptor()
+		desc.inputWidth = size.x
+		desc.inputHeight = size.y
+		desc.outputWidth = size.z
+		desc.outputHeight = size.w
+		desc.colorTextureFormat = .bgra8Unorm
+		desc.outputTextureFormat = .bgra8Unorm
+		desc.colorProcessingMode = .perceptual
+		guard let scaler = desc.makeSpatialScaler(device: device) else { return nil }
+
+		func makeTexture(width: Int, height: Int, usage: MTLTextureUsage) -> MTLTexture? {
+			let desc = MTLTextureDescriptor.texture2DDescriptor(
+				pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
+			desc.storageMode = .private
+			// Every pass and frame uses the same queue, with tracked textures for its dependencies.
+			desc.hazardTrackingMode = .tracked
+			desc.usage = usage
+			return device.makeTexture(descriptor: desc)
+		}
+		guard let input = makeTexture(width: size.x, height: size.y, usage: scaler.colorTextureUsage.union(.renderTarget)),
+			let output = makeTexture(width: size.z, height: size.w, usage: scaler.outputTextureUsage.union(.shaderRead))
+		else { return nil }
+		scaler.colorTexture = input
+		scaler.outputTexture = output
+		scaler.inputContentWidth = size.x
+		scaler.inputContentHeight = size.y
+		return scaler
+	}
+
+	private func makeDrawEncoder(to texture: MTLTexture, in commandBuffer: MTLCommandBuffer) -> MTLRenderCommandEncoder? {
+		let pass = MTLRenderPassDescriptor()
+		pass.colorAttachments[0].texture = texture
+		pass.colorAttachments[0].loadAction = .clear
+		pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+		pass.colorAttachments[0].storeAction = .store
+		return commandBuffer.makeRenderCommandEncoder(descriptor: pass)
+	}
+
 	@discardableResult
 	private func draw(
 		luma: MTLTexture, chroma: MTLTexture, uniforms: inout RenderUniforms, to texture: MTLTexture,
@@ -556,14 +661,7 @@ final class MetalRenderer {
 	) -> Bool {
 		// The layer's pixel format can lag a settings change by a frame
 		let pipeline = texture.pixelFormat == .bgr10a2Unorm ? pipelineHDR : pipelineSDR
-
-		let pass = MTLRenderPassDescriptor()
-		pass.colorAttachments[0].texture = texture
-		pass.colorAttachments[0].loadAction = .clear
-		pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
-		pass.colorAttachments[0].storeAction = .store
-
-		guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return false }
+		guard let encoder = makeDrawEncoder(to: texture, in: commandBuffer) else { return false }
 		encoder.setRenderPipelineState(pipeline)
 		encoder.setVertexBytes(&uniforms, length: MemoryLayout<RenderUniforms>.stride, index: 0)
 		encoder.setFragmentBytes(&uniforms, length: MemoryLayout<RenderUniforms>.stride, index: 0)
