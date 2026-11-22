@@ -51,8 +51,9 @@ final class StreamSession {
 	}
 
 	static let maxReconnectAttempts = 3
-	/// Longest wait between attempts while reconnecting for new settings
-	private static let maxSettingsRetryDelay: Double = 5
+	/// After a settings change the PS5 takes a while to let go of the old connection,
+	/// so wait before the first attempt and between retries
+	private static let settingsRetryDelay: Double = 5
 	/// How long to wait for the console to close the connection after a rest mode request
 	private static let sleepTimeout: Double = 5
 
@@ -289,13 +290,22 @@ final class StreamSession {
 		}
 	}
 
-	/// Reconnects with the current settings, retrying until it works or is cancelled
+	/// Reconnects with the current settings after a short wait, retrying until it works
+	/// or is cancelled. Another change during the wait starts the wait again.
 	private func restartForSettings() {
 		cancelReconnect()
 		teardown()
 		reconnectAttempt = 1
 		state = .applyingSettings(attempt: 1)
-		start()
+		let work = DispatchWorkItem { [weak self] in self?.start() }
+		reconnectWork = work
+		DispatchQueue.main.asyncAfter(deadline: .now() + Self.settingsRetryDelay, execute: work)
+	}
+
+	/// Waiting to make the first reconnect attempt for new settings
+	private var waitingToApplySettings: Bool {
+		if case .applyingSettings(attempt: 1) = state, handle == nil, reconnectWork != nil { return true }
+		return false
 	}
 
 	/// Applies new settings. Codec/resolution/bitrate/HDR/protocol changes need a reconnect.
@@ -309,7 +319,7 @@ final class StreamSession {
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.rumble.enabled = new.rumble
 		renderer?.setDisplayMode(new.displayMode)
-		if needsReconnect, handle != nil, !goingToSleep {
+		if needsReconnect, handle != nil || waitingToApplySettings, !goingToSleep {
 			restartForSettings()
 		} else {
 			configureRenderer()
@@ -499,9 +509,7 @@ final class StreamSession {
 				state = .applyingSettings(attempt: attempt)
 				let work = DispatchWorkItem { [weak self] in self?.start() }
 				reconnectWork = work
-				// 1 s, 2 s, 4 s, then every 5 s
-				let delay = min(pow(2, Double(attempt - 2)), Self.maxSettingsRetryDelay)
-				DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+				DispatchQueue.main.asyncAfter(deadline: .now() + Self.settingsRetryDelay, execute: work)
 			} else if wasError, wasPlaying, Self.isRetryable(quitReason: code), reconnectAttempt < Self.maxReconnectAttempts {
 				reconnectAttempt += 1
 				let attempt = reconnectAttempt
