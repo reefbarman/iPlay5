@@ -655,11 +655,13 @@ final class StreamSession {
 	func setVirtualPad(_ pad: VirtualPadState) {
 		virtualPad = pad
 		sendPad()
+		input.feedback.screenTriggersMoved(left: Float(pad.l2) / 255, right: Float(pad.r2) / 255)
 	}
 
 	func resetScreenInput() {
 		let hadButtons = virtualPad != VirtualPadState() || !touchpadClicks.isEmpty || psRelease != nil
 		virtualPad = VirtualPadState()
+		input.feedback.screenTriggersMoved(left: 0, right: 0)
 		touchpadClicks.values.forEach { $0.cancel() }
 		touchpadClicks.removeAll()
 		psRelease?.cancel()

@@ -91,6 +91,8 @@ struct TriggerEffect: Equatable {
 /// - Controllers with trigger motors (Xbox): rumble, plus trigger vibration
 ///   effects and the "click" of a weapon or resistance effect on the trigger motors.
 /// - DualShock 4: rumble and lightbar. Anything else with haptics: rumble.
+/// - No controller (on-screen controls), or one without motors (e.g. a clamp
+///   like the Backbone): rumble, haptics and trigger effects on the phone itself.
 ///
 /// Call from the main thread unless noted.
 final class ControllerFeedback {
@@ -112,11 +114,18 @@ final class ControllerFeedback {
 	private var playerNumber = 0
 	private var savedLight: GCColor?
 	private var savedPlayerIndex = GCControllerPlayerIndex.indexUnset
-	private var hasTriggerMotors = false
+	/// Trigger effects are played on motors (trigger motors or the phone)
+	private var emulatesTriggers = false
 
 	// Feedback queue
 	private var handles: [Motor] = []
 	private var triggerMotors: [Motor] = []
+	/// The phone's own haptics, when the controller has none
+	private var phone: Motor?
+	/// What rumble/haptics and trigger effects want, per side (level, sharpness); the phone plays the strongest
+	private var rumbleOut: [(Float, Float)] = [(0, 0.5), (0, 0.5)]
+	private var triggerOut: [(Float, Float)] = [(0, 0.5), (0, 0.5)]
+	private var screenTriggers: [Float] = [0, 0]
 	private var motorsEnabled = true
 	private var hapticScale: Float = 1
 	private var motorEffects: [TriggerEffect] = [.off, .off]
@@ -132,40 +141,38 @@ final class ControllerFeedback {
 	func attach(_ controller: GCController?) {
 		detach()
 		self.controller = controller
-		guard let controller else { return }
+		if let controller {
+			savedLight = controller.light?.color
+			savedPlayerIndex = controller.playerIndex
+			applyLightbar()
+			applyPlayerNumber()
+		}
 
-		savedLight = controller.light?.color
-		savedPlayerIndex = controller.playerIndex
-		applyLightbar()
-		applyPlayerNumber()
-		applyTriggerEffects()
-
-		let isDualSense = controller.extendedGamepad is GCDualSenseGamepad
-		let haptics = controller.haptics
+		let isDualSense = controller?.extendedGamepad is GCDualSenseGamepad
+		let haptics = controller?.haptics
 		let localities = haptics?.supportedLocalities ?? []
-		hasTriggerMotors = !isDualSense && localities.contains(.leftTrigger) && localities.contains(.rightTrigger)
-		let wantTriggers = hasTriggerMotors
-		queue.sync {
-			guard let haptics else { return }
-			if localities.contains(.leftHandle) && localities.contains(.rightHandle) {
-				handles = [.leftHandle, .rightHandle].compactMap { Motor(haptics: haptics, locality: $0, queue: queue) }
+		let wantTriggers = !isDualSense && localities.contains(.leftTrigger) && localities.contains(.rightTrigger)
+		let (summary, emulates): (String, Bool) = queue.sync {
+			if let haptics {
+				if localities.contains(.leftHandle) && localities.contains(.rightHandle) {
+					handles = [.leftHandle, .rightHandle].compactMap { Motor(haptics: haptics, locality: $0, queue: queue) }
+				}
+				if handles.count != 2 {
+					handles = [Motor(haptics: haptics, locality: .default, queue: queue)].compactMap { $0 }
+				}
+				if wantTriggers {
+					let motors = [GCHapticsLocality.leftTrigger, .rightTrigger].compactMap { Motor(haptics: haptics, locality: $0, queue: queue) }
+					triggerMotors = motors.count == 2 ? motors : []
+				}
 			}
-			if handles.count != 2 {
-				handles = [Motor(haptics: haptics, locality: .default, queue: queue)].compactMap { $0 }
-			}
-			if wantTriggers {
-				let motors = [GCHapticsLocality.leftTrigger, .rightTrigger].compactMap { Motor(haptics: haptics, locality: $0, queue: queue) }
-				triggerMotors = motors.count == 2 ? motors : []
-			}
+			if handles.isEmpty { phone = Motor.phone(queue: queue) }
 			startWatchdog()
+			let summary = "\(handles.count) rumble motor(s), \(triggerMotors.count) trigger motor(s), phone haptics \(phone != nil ? "yes" : "no")"
+			return (summary, triggerMotors.count == 2 || phone != nil)
 		}
-		log.notice("Feedback: \(self.handlesDescription, privacy: .public)")
-	}
-
-	private var handlesDescription: String {
-		queue.sync {
-			"\(handles.count) rumble motor(s), \(triggerMotors.count) trigger motor(s), adaptive triggers \(controller?.extendedGamepad is GCDualSenseGamepad ? "yes" : "no"), light \(controller?.light != nil ? "yes" : "no")"
-		}
+		emulatesTriggers = emulates
+		applyTriggerEffects()
+		log.notice("Feedback: \(summary, privacy: .public), adaptive triggers \(isDualSense ? "yes" : "no", privacy: .public), light \(controller?.light != nil ? "yes" : "no", privacy: .public)")
 	}
 
 	/// Puts the controller back the way we found it
@@ -180,14 +187,17 @@ final class ControllerFeedback {
 		}
 		controller = nil
 		savedLight = nil
-		hasTriggerMotors = false
+		emulatesTriggers = false
 		queue.sync {
 			watchdog?.cancel()
 			watchdog = nil
-			(handles + triggerMotors).forEach { $0.stop() }
+			(handles + triggerMotors + [phone].compactMap { $0 }).forEach { $0.stop() }
 			handles = []
 			triggerMotors = []
+			phone = nil
 			triggerValues = [0, 0]
+			rumbleOut = [(0, 0.5), (0, 0.5)]
+			triggerOut = [(0, 0.5), (0, 0.5)]
 			armed = [true, true]
 		}
 	}
@@ -262,7 +272,7 @@ final class ControllerFeedback {
 			Self.apply(effects[0], scale: scale, to: ds.leftTrigger)
 			Self.apply(effects[1], scale: scale, to: ds.rightTrigger)
 		}
-		guard hasTriggerMotors else { return }
+		guard emulatesTriggers else { return }
 		queue.async {
 			self.motorEffects = effects
 			self.motorTriggerScale = scale
@@ -290,13 +300,23 @@ final class ControllerFeedback {
 		return (z[0], z[1], z[2], z[3], z[4], z[5], z[6], z[7], z[8], z[9])
 	}
 
-	// MARK: - Trigger motors (Xbox)
+	// MARK: - Trigger emulation (Xbox trigger motors, phone)
 
-	/// Trigger positions 0...1, for the trigger motor emulation
+	/// Physical trigger positions 0...1
 	func triggersMoved(left: Float, right: Float) {
-		guard hasTriggerMotors else { return }
+		guard emulatesTriggers else { return }
 		queue.async {
 			self.triggerValues = [left, right]
+			self.updateTriggerMotors()
+		}
+	}
+
+	/// On-screen L2/R2 positions 0...1
+	func screenTriggersMoved(left: Float, right: Float) {
+		guard emulatesTriggers else { return }
+		queue.async {
+			guard self.screenTriggers != [left, right] else { return }
+			self.screenTriggers = [left, right]
 			self.updateTriggerMotors()
 		}
 	}
@@ -304,38 +324,45 @@ final class ControllerFeedback {
 	/// Queue. Vibration plays while the trigger sits in a vibrating zone; weapon
 	/// and resistance effects become a click where the resistance would break or start.
 	private func updateTriggerMotors() {
-		guard triggerMotors.count == 2 else { return }
+		let onTriggers = triggerMotors.count == 2
+		guard onTriggers || phone != nil else { return }
 		let scale = motorsEnabled ? motorTriggerScale : 0
 		for side in 0..<2 {
-			let motor = triggerMotors[side]
-			let p = triggerValues[side]
+			let p = max(triggerValues[side], screenTriggers[side])
+			var out: (Float, Float) = (0, 0.5)
+			var tap: (Float, Float)?
 			switch motorEffects[side].kind {
 			case .off:
-				motor.set(intensity: 0, sharpness: 0.5)
+				break
 			case .vibration(let zones, let hz):
-				let level = zones[min(9, Int(p * 10))]
-				motor.set(intensity: level * scale, sharpness: Self.sharpness(hz: hz))
+				// The phone is the whole device in your hand: only while the trigger is held
+				if onTriggers || p > 0 {
+					out = (zones[min(9, Int(p * 10))] * scale, Self.sharpness(hz: hz))
+				}
 			case .weapon(let start, let end, let strength):
-				motor.set(intensity: 0, sharpness: 0.5)
 				if armed[side], p >= end {
 					armed[side] = false
-					motor.tap(intensity: strength * scale, sharpness: 1)
+					tap = (strength * scale, 1)
 				} else if p < max(start, 0.05) {
 					armed[side] = true
 				}
 			case .feedback(let zones):
-				motor.set(intensity: 0, sharpness: 0.5)
 				// A bump where the resistance starts; nothing if it starts at rest
-				guard let wallZone = zones.firstIndex(where: { $0 > 0 }), wallZone > 0 else { continue }
+				guard let wallZone = zones.firstIndex(where: { $0 > 0 }), wallZone > 0 else { break }
 				let wall = Float(wallZone) / 10
 				if armed[side], p >= wall {
 					armed[side] = false
-					motor.tap(intensity: zones[wallZone] * 0.6 * scale, sharpness: 0.4)
+					tap = (zones[wallZone] * 0.6 * scale, 0.4)
 				} else if p < wall - 0.05 {
 					armed[side] = true
 				}
 			}
+			triggerOut[side] = out
+			let motor = onTriggers ? triggerMotors[side] : phone
+			if onTriggers { motor?.set(intensity: out.0, sharpness: out.1) }
+			if let tap { motor?.tap(intensity: tap.0, sharpness: tap.1) }
 		}
+		flushPhone()
 	}
 
 	// MARK: - Rumble and haptics (any thread)
@@ -389,10 +416,13 @@ final class ControllerFeedback {
 
 	/// Queue
 	private func drive(left: Float, right: Float, sharpness: (Float, Float)) {
-		guard motorsEnabled, !handles.isEmpty else { return }
+		guard motorsEnabled, !handles.isEmpty || phone != nil else { return }
 		let l = left * hapticScale
 		let r = right * hapticScale
-		if handles.count == 2 {
+		rumbleOut = [(l, sharpness.0), (r, sharpness.1)]
+		if phone != nil {
+			flushPhone()
+		} else if handles.count == 2 {
 			handles[0].set(intensity: l, sharpness: sharpness.0)
 			handles[1].set(intensity: r, sharpness: sharpness.1)
 		} else {
@@ -402,21 +432,32 @@ final class ControllerFeedback {
 		}
 	}
 
+	/// Queue. One actuator for everything: play whatever is strongest right now.
+	private func flushPhone() {
+		guard let phone else { return }
+		let strongest = (rumbleOut + triggerOut).max { $0.0 < $1.0 } ?? (0, 0.5)
+		phone.set(intensity: motorsEnabled ? strongest.0 : 0, sharpness: strongest.1)
+	}
+
 	/// Queue
 	private func silence() {
-		(handles + triggerMotors).forEach { $0.set(intensity: 0, sharpness: 0.5) }
+		rumbleOut = [(0, 0.5), (0, 0.5)]
+		triggerOut = [(0, 0.5), (0, 0.5)]
+		(handles + triggerMotors + [phone].compactMap { $0 }).forEach { $0.set(intensity: 0, sharpness: 0.5) }
 	}
 
 	/// Queue. Haptics arrive every 10 ms while a game plays them; if they stop
 	/// without a final silent packet, don't leave the motors running.
 	private func startWatchdog() {
-		guard !handles.isEmpty else { return }
+		guard !handles.isEmpty || phone != nil else { return }
 		let timer = DispatchSource.makeTimerSource(queue: queue)
 		timer.schedule(deadline: .now() + 0.05, repeating: 0.05)
 		timer.setEventHandler { [weak self] in
 			guard let self, self.lastHaptics > 0, CACurrentMediaTime() - self.lastHaptics > 0.1 else { return }
 			self.lastHaptics = 0
+			self.rumbleOut = [(0, 0.5), (0, 0.5)]
 			self.handles.forEach { $0.set(intensity: 0, sharpness: 0.5) }
+			self.flushPhone()
 		}
 		timer.resume()
 		watchdog = timer
@@ -436,8 +477,26 @@ private final class Motor {
 	private var lastRestart: CFTimeInterval = 0
 	private var stopped = false
 
-	init?(haptics: GCDeviceHaptics, locality: GCHapticsLocality, queue: DispatchQueue) {
+	convenience init?(haptics: GCDeviceHaptics, locality: GCHapticsLocality, queue: DispatchQueue) {
 		guard let engine = haptics.createEngine(withLocality: locality) else { return nil }
+		self.init(engine: engine, name: locality.rawValue, queue: queue)
+	}
+
+	/// The phone's Taptic Engine, if it has one
+	static func phone(queue: DispatchQueue) -> Motor? {
+		guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return nil }
+		do {
+			let engine = try CHHapticEngine()
+			// Don't touch the audio session the game audio runs on
+			engine.playsHapticsOnly = true
+			return Motor(engine: engine, name: "phone", queue: queue)
+		} catch {
+			log.error("Phone haptics: \(error.localizedDescription, privacy: .public)")
+			return nil
+		}
+	}
+
+	init?(engine: CHHapticEngine, name: String, queue: DispatchQueue) {
 		self.engine = engine
 		self.queue = queue
 		engine.isAutoShutdownEnabled = false
@@ -447,7 +506,7 @@ private final class Motor {
 		do {
 			try start()
 		} catch {
-			log.error("Haptics (\(locality.rawValue, privacy: .public)): \(error.localizedDescription, privacy: .public)")
+			log.error("Haptics (\(name, privacy: .public)): \(error.localizedDescription, privacy: .public)")
 			return nil
 		}
 	}

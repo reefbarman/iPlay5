@@ -53,6 +53,8 @@ final class ControllerInput {
 		observers.append(NotificationCenter.default.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] _ in
 			self?.pickController()
 		})
+		// Phone haptics until (unless) a controller with its own turns up
+		feedback.attach(nil)
 		pickController()
 	}
 
