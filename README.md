@@ -17,10 +17,12 @@ Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation"
 
 ## Features
 
-- **Picture:** hardware HEVC/H.264 decode drawn with Metal at the panel's native resolution, up to 1080p60 (the PS5's Remote Play limit) and the highest bitrate the console allows. Choose Sharp (Catmull-Rom), Bilinear, MetalFX Spatial, or MetalFX 4K upscaling (SDR and HDR) on supported devices.
+- **Picture:** hardware HEVC/H.264 decode drawn with Metal at the panel's native resolution, up to 1080p60 (the PS5's Remote Play limit) and up to 200 Mbps (the console may cap it lower). Choose Sharp (Catmull-Rom), Bilinear, MetalFX Spatial, or MetalFX 4K upscaling (SDR and HDR) on supported devices.
 - **HDR:** 10-bit HDR10 straight to the display with EDR. Toggle it per stream.
 - **Fit or Zoom to fill:** see the whole picture with black bars, or fill the screen and crop the overflow.
-- **Controllers:** the controller's home/logo button acts as the PS button, and there's an on-screen PS button for controllers that don't have one (or whose button iOS doesn't pass through, like the GameSir G8+). Phone gyro is used for motion controls when your controller has none. Rumble works on any controller with vibration. On a DualSense, the touchpad and motion are passed through, haptics play on the grips with the game's texture and pitch, adaptive triggers get each effect's shape along the trigger's travel, and the lightbar and player LEDs follow the game. The PS5's vibration and trigger intensity settings apply. Xbox controllers play trigger effects on their trigger motors, as vibration or a click where a trigger would give way. A DualShock 4's lightbar follows the game too.
+- **Controllers:** the controller's home/logo button acts as the PS button, and there's an on-screen PS button for controllers that don't have one (or whose button iOS doesn't pass through, like the GameSir G8+). Phone gyro is used for motion controls when your controller has none. Rumble works on any controller with vibration. On a DualSense, the touchpad and motion are passed through, haptics play on the grips with the game's texture and pitch, adaptive triggers get each effect's shape along the trigger's travel, and the lightbar and player LEDs follow the game. The PS5's vibration and trigger intensity settings apply. Xbox controllers play trigger effects on their trigger motors, as vibration or a click where a trigger would give way. A DualShock 4's lightbar follows the game too. With virtual controls, or a controller without motors (clip-ons like the Backbone or GameSir G8+), rumble, haptics and trigger effects play on the phone instead. On the console list, the d-pad or left stick picks a console and ✕ (or A) wakes or plays it.
+- **Stats:** Simple shows resolution, fps, bitrate, ping and loss on one line. Advanced adds codec, decode time, lost frames, frame generation and network smoothing detail, and the connected controller. They sit in the black bar above the picture when there is one. Settings › Display.
+- **Quick app switches:** the stream stays connected while you briefly check another app. If iOS ends the background time, it reconnects when you come back instead of showing a frozen picture.
 - **Touchscreen as touchpad:** swipe to move a finger (up to two), quick tap to click.
 - **Easy setup:** finds your PS5 on Wi-Fi automatically and follows it if its IP address changes. Sign in to PSN to fill in your account ID (passkeys and password managers work through the Safari option). Wake from rest mode.
 - **Frame generation (experimental):** makes an in-between frame for each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. Tap the bottom-right corner while streaming to turn it on and off and compare.
@@ -55,7 +57,7 @@ https://raw.githubusercontent.com/reefbarman/iPlay5/main/altstore-source.json
 
 While streaming: tap the top-right corner, then the gear, to open settings. Or hold **Select + Start** for a second. Tap the top-left corner, then the PlayStation logo, to press the PS button.
 
-Start at 1080p60 with H.265. HDR needs H.265 and HDR enabled on the PS5. For the most reliable stream, use 5 GHz Wi-Fi with the PS5 wired to the router.
+Start at 1080p60 with H.265. HDR needs H.265 and HDR enabled on the PS5. For the most reliable stream, use 5 GHz Wi-Fi with the PS5 wired to the router. Bitrates above 100 Mbps need a strong connection (ideally the PS5 on Ethernet and 5 GHz or 6 GHz Wi-Fi) or you may see stutter.
 
 ## Controls guide
 
