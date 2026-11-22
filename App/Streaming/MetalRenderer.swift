@@ -653,14 +653,19 @@ final class StreamMetalView: UIView {
 	}
 
 	private func bottomSystemButtonY(in safeArea: CGRect) -> CGFloat {
+		let halfHeight = VirtualControlsOverlay.systemButtonHeight / 2
 		if let aspect = videoAspectForLetterbox, aspect > 0 {
-			// The renderer centres Fit video. Only use the bar when the entire button fits.
 			let videoBottom = bounds.midY + bounds.width / aspect / 2
-			if safeArea.maxY - videoBottom >= VirtualControlsOverlay.systemButtonHeight + 8 {
-				return (videoBottom + safeArea.maxY) / 2
+			let firstCentreInBar = videoBottom + halfHeight + 4
+			// The stream hides the system overlays. Let these two buttons extend below
+			// the safe area if needed, but leave a gap at the bottom gesture edge.
+			let lastCentreInBar = bounds.maxY - halfHeight - 12
+			if firstCentreInBar <= lastCentreInBar {
+				let preferredCentre = (videoBottom + safeArea.maxY) / 2
+				return min(max(preferredCentre, firstCentreInBar), lastCentreInBar)
 			}
 		}
-		return safeArea.maxY - (VirtualControlsOverlay.systemButtonHeight / 2 + 4)
+		return safeArea.maxY - halfHeight - 4
 	}
 
 	override func safeAreaInsetsDidChange() {
