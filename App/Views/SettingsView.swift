@@ -25,7 +25,7 @@ struct StreamSettingsForm: View {
 					Spacer()
 					Text("\(settings.bitrateMbps) Mbps").foregroundStyle(.secondary).monospacedDigit()
 				}
-				Slider(value: Binding(get: { Double(settings.bitrateMbps) }, set: { settings.bitrateMbps = Int($0) }), in: 5...100, step: 5)
+				Slider(value: Binding(get: { Double(settings.bitrateMbps) }, set: { settings.bitrateMbps = Int($0) }), in: 5...200, step: 5)
 			}
 			Picker("Codec", selection: $settings.codec) {
 				ForEach(VideoCodecChoice.allCases) { Text($0.label).tag($0) }
@@ -35,7 +35,7 @@ struct StreamSettingsForm: View {
 		} header: {
 			Text("Video")
 		} footer: {
-			Text("PS5 Remote Play tops out at 1080p60. The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
+			Text("PS5 Remote Play tops out at 1080p60. The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. Above 100 Mbps needs a strong connection (ideally the PS5 on Ethernet and 5 GHz or 6 GHz Wi-Fi) or you may see stutter. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
 		}
 
 		Section {
@@ -51,11 +51,13 @@ struct StreamSettingsForm: View {
 				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 			}
 			Toggle("Frame generation (experimental)", isOn: $settings.frameGeneration)
-			Toggle("Show stats", isOn: $settings.showStats)
+			Picker("Stats", selection: $settings.statsMode) {
+				ForEach(StatsMode.allCases) { Text($0.label).tag($0) }
+			}
 		} header: {
 			Text("Display")
 		} footer: {
-			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery. Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. The FG button in the bottom-right corner of the stream turns it on and off.")
+			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery. Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. The FG button in the bottom-right corner of the stream turns it on and off. Stats sit in the black bar above the picture: Simple shows the essentials, Advanced shows everything.")
 			if MetalRenderer.supportsMetalFX {
 				Text("MetalFX Spatial enlarges the picture to the screen's resolution. MetalFX 4K enlarges it to 3840×2160 and then scales it down to the screen, which can look smoother but uses more GPU and battery.")
 			}
@@ -68,6 +70,9 @@ struct StreamSettingsForm: View {
 			Toggle("Rumble", isOn: $settings.rumble)
 			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
+			NavigationLink { ControlsGuideView() } label: {
+				Label("Controls Guide", systemImage: "gamecontroller")
+			}
 		} header: {
 			Text("Controller")
 		} footer: {
@@ -110,11 +115,6 @@ struct SettingsView: View {
 		@Bindable var store = store
 		NavigationStack {
 			Form {
-				Section {
-					NavigationLink { ControlsGuideView() } label: {
-						Label("Controls Guide", systemImage: "gamecontroller")
-					}
-				}
 				StreamSettingsForm(settings: $store.settings)
 
 				Section {

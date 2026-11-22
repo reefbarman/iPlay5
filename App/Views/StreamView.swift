@@ -550,11 +550,12 @@ struct StreamView: View {
 			.padding(24)
 			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
 		case .streaming:
-			if session.settings.showStats && !marketingScreenshotMode {
-				StatsOverlay(stats: session.stats, settings: session.settings)
-					.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-					.padding(12)
+			// Held back while the corner hints are up so the two don't overlap
+			if session.settings.statsMode != .off && !marketingScreenshotMode
+				&& !(showSettingsHint && !showMenuButton) {
+				StatsOverlay(stats: session.stats, settings: session.settings, videoAspect: letterboxAspect(for: session))
 					.allowsHitTesting(false)
+					.transition(.opacity)
 			}
 		case .needsPIN(let incorrect):
 			VStack(spacing: 12) {
@@ -685,9 +686,6 @@ struct StreamView: View {
 			Form {
 				Section {
 					Button("Resume") { showMenu = false }
-					NavigationLink { ControlsGuideView() } label: {
-						Label("Controls Guide", systemImage: "gamecontroller")
-					}
 					if wantsVirtualControls, let status = session?.captureStatus {
 						Text(status).foregroundStyle(.secondary)
 					}
@@ -764,40 +762,210 @@ struct StreamView: View {
 	}
 }
 
+/// Stats, centred along the top. With a letterboxed picture they sit in the black bar
+/// above it and spread across it; otherwise they float over the top of the picture.
 private struct StatsOverlay: View {
 	let stats: StreamStats
 	let settings: StreamSettings
+	/// The picture's aspect ratio when it's fitted (letterboxed), nil when it fills the screen
+	let videoAspect: CGFloat?
+
+	/// Keeps clear of the PS button and settings hot corners
+	private static let cornerReserve: CGFloat = 84
+	/// Below this there's no usable bar, so float over the picture instead
+	private static let minBarHeight: CGFloat = 28
+
+	private struct Item: Identifiable {
+		let label: String
+		let value: String
+		var warn = false
+		var id: String { label }
+	}
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 2) {
-			Text("\(stats.width)×\(stats.height) @ \(Int(stats.fps)) fps")
-			Text(String(format: "%.1f Mbps (asked %d)", stats.bitrateMbps, settings.bitrateMbps))
-			Text("\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")  decode \(String(format: "%.1f", stats.decodeMs)) ms")
-			Text(String(format: "ping %.0f ms  loss %.1f%%", stats.rttMs, stats.packetLoss * 100))
-			if settings.takionV20, stats.takionVersion > 0 {
-				Text("Takion v\(stats.takionVersion)\(stats.takionVersion < 20 ? " (v20 declined)" : "")")
-			}
-			if stats.displayHz > 0 { Text("display \(Int(stats.displayHz)) Hz") }
-			if settings.frameGeneration {
-				if stats.frameGenActive {
-					Text(String(format: "frame gen +%d fps  %.1f ms  skip %d  repeats %d", stats.generatedFPS, stats.generateMs, stats.skippedFrames, stats.repeatedFrames))
-					if let status = stats.frameGenStatus { Text(status) }
-				} else {
-					Text("frame gen off: screen too slow")
-				}
-			}
-			Text("lost \(stats.lostFrames)  failed \(stats.failedFrames)")
-			if let s = stats.smoothing {
-				Text(String(format: "smooth: wait %.0f ms  late %d/%d pkts", s.waitMs, s.packetsLate, s.packetsSkipped))
-				Text("  fec fail \(s.fecFailures)  patched \(s.framesPatched)")
-				Text("  held \(s.heldFrames)  dropped \(s.droppedFrames)  dry \(s.underruns)")
-			}
-			if let controller = stats.controller { Text(controller) }
+		GeometryReader { geo in
+			let bar = barHeight(in: geo.size)
+			let inBar = bar >= Self.minBarHeight
+			content(roomy: inBar && bar >= 44)
+				.padding(.horizontal, inBar ? 0 : 10)
+				.padding(.vertical, inBar ? 4 : 6)
+				.background(.black.opacity(inBar ? 0 : 0.55), in: RoundedRectangle(cornerRadius: 8))
+				.frame(maxWidth: max(0, geo.size.width - Self.cornerReserve * 2))
+				.frame(minHeight: inBar ? bar : nil)
+				.padding(.top, inBar ? 0 : 12)
+				.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 		}
-		.font(.caption2.monospaced())
-		.padding(8)
-		.background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+		.ignoresSafeArea()
 		.foregroundStyle(.white)
+	}
+
+	/// The black bar above the picture, in points (0 when there isn't one)
+	private func barHeight(in size: CGSize) -> CGFloat {
+		guard let videoAspect, size.width > 0 else { return 0 }
+		return max(0, (size.height - size.width / videoAspect) / 2)
+	}
+
+	@ViewBuilder
+	private func content(roomy: Bool) -> some View {
+		switch settings.statsMode {
+		case .off:
+			EmptyView()
+		case .simple:
+			HStack(spacing: roomy ? 20 : 14) {
+				ForEach(simpleItems) { cell($0, valueFirst: true) }
+			}
+			.font((roomy ? Font.footnote : .caption2).monospaced())
+		case .advanced:
+			StatsFlow(spacing: 10, lineSpacing: 2) {
+				ForEach(advancedItems) { cell($0) }
+			}
+			.font(.caption2.monospaced())
+		}
+	}
+
+	private func cell(_ item: Item, valueFirst: Bool = false) -> some View {
+		let label = Text(item.label).foregroundStyle(.white.opacity(0.55))
+		let value = Text(item.value).foregroundStyle(item.warn ? .orange : .white)
+		return HStack(spacing: 4) {
+			if valueFirst {
+				value
+				if !item.label.isEmpty { label }
+			} else {
+				label
+				value
+			}
+		}
+		.lineLimit(1)
+		.minimumScaleFactor(0.7)
+	}
+
+	private var lossPercent: Double { stats.packetLoss * 100 }
+	private var codec: String { "\(settings.effectiveCodec == .h265 ? "HEVC" : "H.264")\(settings.hdr ? " HDR" : "")" }
+
+	private var simpleItems: [Item] {
+		var items = [
+			Item(label: "", value: stats.height > 0 ? "\(stats.height)p" : "–"),
+			Item(label: "fps", value: "\(Int(stats.fps))"),
+			Item(label: "Mbps", value: String(format: "%.1f", stats.bitrateMbps)),
+			Item(label: "ping", value: String(format: "%.0f ms", stats.rttMs), warn: stats.rttMs > 40),
+			Item(label: "loss", value: String(format: "%.1f%%", lossPercent), warn: lossPercent >= 1),
+		]
+		if settings.frameGeneration {
+			items.append(Item(label: "FG", value: stats.frameGenActive ? "+\(stats.generatedFPS)" : "off", warn: !stats.frameGenActive))
+		}
+		return items
+	}
+
+	/// Related values share a cell with short labels so the advanced stats stay
+	/// compact along the top.
+	private var advancedItems: [Item] {
+		let hz = stats.displayHz > 0 ? " @\(Int(stats.displayHz))Hz" : ""
+		var items = [
+			Item(label: "", value: "\(stats.width)×\(stats.height) \(codec)"),
+			Item(label: "fps", value: "\(Int(stats.fps))\(hz)"),
+			Item(label: "Mbps", value: String(format: "%.1f/%d", stats.bitrateMbps, settings.bitrateMbps)),
+			Item(label: "ping", value: String(format: "%.0fms", stats.rttMs), warn: stats.rttMs > 40),
+			Item(label: "loss", value: String(format: "%.1f%%", lossPercent), warn: lossPercent >= 1),
+			Item(label: "dec", value: String(format: "%.1fms", stats.decodeMs)),
+		]
+		addCounter(&items, "lost/fail", stats.lostFrames, stats.failedFrames, warnIfNonZero: true)
+		if settings.takionV20, stats.takionVersion > 0 {
+			let declined = stats.takionVersion < 20
+			items.append(Item(label: "takion", value: "v\(stats.takionVersion)\(declined ? " v20 declined" : "")", warn: declined))
+		}
+		if settings.frameGeneration {
+			if stats.frameGenActive {
+				var fg = String(format: "+%d %.1fms", stats.generatedFPS, stats.generateMs)
+				if let status = stats.frameGenStatus, !status.isEmpty { fg += " \(status)" }
+				items.append(Item(label: "FG", value: fg))
+				addCounter(&items, "skip/rep", stats.skippedFrames, stats.repeatedFrames)
+			} else {
+				items.append(Item(label: "FG", value: "off (screen too slow)", warn: true))
+			}
+		}
+		if let s = stats.smoothing {
+			items.append(Item(label: "wait", value: String(format: "%.0fms", s.waitMs)))
+			addCounter(&items, "late/skip", s.packetsLate, s.packetsSkipped)
+			addCounter(&items, "fec", s.fecFailures)
+			addCounter(&items, "patched", s.framesPatched)
+			addCounter(&items, "held/drop", s.heldFrames, s.droppedFrames)
+			addCounter(&items, "dry", s.underruns)
+		}
+		if let controller = stats.controller {
+			let short = controller
+				.replacingOccurrences(of: " Wireless Controller", with: "")
+				.replacingOccurrences(of: " Controller", with: "")
+			items.append(Item(label: "pad", value: short))
+		}
+		return items
+	}
+
+	/// Adds a counter cell, one value or a pair shown as a/b
+	private func addCounter(_ items: inout [Item], _ label: String, _ values: Int..., warnIfNonZero: Bool = false) {
+		let counted = values.contains { $0 != 0 }
+		items.append(Item(label: label, value: values.map(String.init).joined(separator: "/"), warn: warnIfNonZero && counted))
+	}
+}
+
+/// Lays cells out left to right in centred rows, each cell only taking the
+/// width it needs. Uses as few rows as fit, then narrows them until they're
+/// about even, rather than one full row and a short leftover.
+private struct StatsFlow: Layout {
+	var spacing: CGFloat
+	var lineSpacing: CGFloat
+
+	private func rows(_ subviews: Subviews, width: CGFloat) -> [[(index: Int, size: CGSize)]] {
+		let maxWidth = width.isFinite ? width : .greatestFiniteMagnitude
+		let count = greedyRows(subviews, width: maxWidth).count
+		guard count > 1 else { return greedyRows(subviews, width: maxWidth) }
+		// The narrowest width that still needs no more rows
+		var low = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+		var high = min(maxWidth, rowWidth(greedyRows(subviews, width: .greatestFiniteMagnitude)[0]))
+		while high - low > 1 {
+			let mid = (low + high) / 2
+			if greedyRows(subviews, width: mid).count <= count { high = mid } else { low = mid }
+		}
+		return greedyRows(subviews, width: high)
+	}
+
+	private func greedyRows(_ subviews: Subviews, width: CGFloat) -> [[(index: Int, size: CGSize)]] {
+		var rows: [[(index: Int, size: CGSize)]] = [[]]
+		var x: CGFloat = 0
+		for (index, view) in subviews.enumerated() {
+			let size = view.sizeThatFits(.unspecified)
+			if x > 0, x + spacing + size.width > width {
+				rows.append([])
+				x = 0
+			}
+			x += (x > 0 ? spacing : 0) + size.width
+			rows[rows.count - 1].append((index, size))
+		}
+		return rows
+	}
+
+	private func rowWidth(_ row: [(index: Int, size: CGSize)]) -> CGFloat {
+		row.reduce(0) { $0 + $1.size.width } + spacing * CGFloat(max(0, row.count - 1))
+	}
+
+	func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+		let rows = rows(subviews, width: proposal.width ?? .infinity)
+		let width = rows.map(rowWidth).max() ?? 0
+		let height = rows.reduce(0) { $0 + ($1.map(\.size.height).max() ?? 0) }
+			+ lineSpacing * CGFloat(max(0, rows.count - 1))
+		return CGSize(width: width, height: height)
+	}
+
+	func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+		var y = bounds.minY
+		for row in rows(subviews, width: bounds.width) {
+			var x = bounds.minX + (bounds.width - rowWidth(row)) / 2
+			let height = row.map(\.size.height).max() ?? 0
+			for cell in row {
+				subviews[cell.index].place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(cell.size))
+				x += cell.size.width + spacing
+			}
+			y += height + lineSpacing
+		}
 	}
 }
 

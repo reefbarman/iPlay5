@@ -123,6 +123,23 @@ enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
 	var usesMetalFX: Bool { self == .metalFX || self == .metalFX4K }
 }
 
+enum StatsMode: String, Codable, CaseIterable, Identifiable {
+	case off
+	/// One line: resolution, fps, bitrate, ping, loss
+	case simple
+	/// Everything, laid out across the black bar
+	case advanced
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .off: "Off"
+		case .simple: "Simple"
+		case .advanced: "Advanced"
+		}
+	}
+}
+
 struct StreamSettings: Codable, Equatable {
 	var resolution: StreamResolution = .p1080
 	var fps: Int = 60
@@ -131,7 +148,7 @@ struct StreamSettings: Codable, Equatable {
 	var hdr: Bool = false
 	var displayMode: DisplayMode = .fit
 	var upscaling: UpscalingMode = .sharp
-	var showStats: Bool = false
+	var statsMode: StatsMode = .off
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
 	var rumble: Bool = true
@@ -158,7 +175,7 @@ struct StreamSettings: Codable, Equatable {
 
 	init() {}
 
-	private enum LegacyKeys: String, CodingKey { case frameGenMode, sharpUpscaling }
+	private enum LegacyKeys: String, CodingKey { case frameGenMode, sharpUpscaling, showStats }
 
 	/// Missing keys keep their defaults, so adding a setting doesn't reset the others
 	init(from decoder: Decoder) throws {
@@ -176,7 +193,12 @@ struct StreamSettings: Codable, Equatable {
 		} else if let sharp = try? legacy.decodeIfPresent(Bool.self, forKey: .sharpUpscaling) {
 			upscaling = sharp ? .sharp : .bilinear
 		}
-		showStats = try c.decodeIfPresent(Bool.self, forKey: .showStats) ?? d.showStats
+		if let mode = try? c.decodeIfPresent(StatsMode.self, forKey: .statsMode) {
+			statsMode = mode
+		} else if let show = try? legacy.decodeIfPresent(Bool.self, forKey: .showStats) {
+			// The old on/off toggle showed everything
+			statsMode = show ? .advanced : .off
+		}
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad

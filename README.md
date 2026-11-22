@@ -59,7 +59,7 @@ Start at 1080p60 with H.265. HDR needs H.265 and HDR enabled on the PS5. For the
 
 ## Controls guide
 
-Open **Controls Guide** in Settings or in the in-stream menu. The dashed line in the diagram marks the upper-screen touchpad; the dashed circles show example stick positions, not fixed touch targets. The PS and Settings buttons are shown after a corner tap. Capture only appears if enabled.
+Open **Controls Guide** from the Controller section in Settings or in the in-stream menu. The dashed line in the diagram marks the upper-screen touchpad; the dashed circles show example stick positions, not fixed touch targets. The PS and Settings buttons are shown after a corner tap. Capture only appears if enabled.
 
 <p align="center"><img src="App/Resources/VirtualControlsGuide.png" width="640" alt="Compact iPhone and Duo controls: touchpad in the upper half, floating sticks below, fixed buttons on both sides, and stream shortcuts along the bottom"></p>
 
