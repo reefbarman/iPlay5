@@ -946,6 +946,13 @@ final class StreamMetalView: UIView {
 		setNeedsLayout()
 	}
 
+	/// Size, opacity and stick behaviour. A change lets go of anything held, since the layout moves.
+	func setControlsStyle(_ style: VirtualControlsStyle) {
+		guard controls.style != style else { return }
+		resetTouches()
+		controls.style = style
+	}
+
 	func setInputMode(acceptsInput: Bool, virtualControls: Bool) {
 		let hideControls = !acceptsInput || !virtualControls
 		guard self.acceptsInput != acceptsInput || controls.isHidden != hideControls else { return }

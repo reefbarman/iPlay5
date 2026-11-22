@@ -10,12 +10,13 @@ struct ConsoleListView: View {
 	@State private var showingAdd = false
 	@State private var showingSettings = false
 	@State private var playing: Console?
+	@State private var consoleSettings: Console?
 	@State private var waking: UUID?
 	@State private var selection: UUID?
 
 	/// The controller only drives the list when nothing is covering it
 	private var gamepadActive: Bool {
-		playing == nil && !showingAdd && !showingSettings
+		playing == nil && !showingAdd && !showingSettings && consoleSettings == nil
 	}
 
 	var body: some View {
@@ -46,6 +47,13 @@ struct ConsoleListView: View {
 					.listRowBackground(selected ? Color.accentColor.opacity(0.18) : nil)
 					.swipeActions {
 						Button("Remove", role: .destructive) { store.remove(console) }
+						Button("Settings") { consoleSettings = console }
+							.tint(.gray)
+					}
+					.contextMenu {
+						Button { consoleSettings = console } label: {
+							Label("Stream settings", systemImage: "slider.horizontal.3")
+						}
 					}
 				}
 			}
@@ -68,6 +76,7 @@ struct ConsoleListView: View {
 					.onAppear { discovery.stop() } // the sheet runs its own sweep
 			}
 			.sheet(isPresented: $showingSettings) { SettingsView() }
+			.sheet(item: $consoleSettings) { console in ConsoleSettingsView(consoleID: console.id) }
 			.fullScreenCover(item: $playing) { console in
 				StreamView(console: console)
 			}

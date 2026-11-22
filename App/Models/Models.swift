@@ -12,6 +12,9 @@ struct Console: Codable, Identifiable, Hashable {
 	/// rp_key ("morning"): 16 bytes
 	var rpKey: Data
 	var mac: Data
+	/// This console's own video and network settings, nil to use the shared ones
+	/// (e.g. one PS5 on Ethernet, another on Wi-Fi)
+	var customSettings: ConnectionSettings?
 }
 
 @Observable
@@ -123,6 +126,48 @@ enum UpscalingMode: String, Codable, CaseIterable, Identifiable {
 	var usesMetalFX: Bool { self == .metalFX || self == .metalFX4K }
 }
 
+/// Rumble, haptics and trigger effects played on the phone itself, when there's
+/// no controller or the controller has no motors
+enum PhoneHaptics: String, Codable, CaseIterable, Identifiable {
+	case off, light, full
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .off: "Off"
+		case .light: "Light"
+		case .full: "Full"
+		}
+	}
+	var scale: Float {
+		switch self {
+		case .off: 0
+		case .light: 0.45
+		case .full: 1
+		}
+	}
+}
+
+enum ControlsSize: String, Codable, CaseIterable, Identifiable {
+	case small, medium, large
+
+	var id: Self { self }
+	var label: String {
+		switch self {
+		case .small: "Small"
+		case .medium: "Medium"
+		case .large: "Large"
+		}
+	}
+	var scale: CGFloat {
+		switch self {
+		case .small: 0.85
+		case .medium: 1
+		case .large: 1.15
+		}
+	}
+}
+
 enum StatsMode: String, Codable, CaseIterable, Identifiable {
 	case off
 	/// One line: resolution, fps, bitrate, ping, loss
@@ -151,10 +196,18 @@ struct StreamSettings: Codable, Equatable {
 	var statsMode: StatsMode = .off
 	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
 	var phoneMotion: Bool = true
+	/// Master switch for rumble, haptics and trigger motors
 	var rumble: Bool = true
+	/// How strongly rumble plays on the phone (virtual controls, or a controller without motors)
+	var phoneHaptics: PhoneHaptics = .full
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
 	var virtualControls: VirtualControlsMode = .auto
+	var controlsSize: ControlsSize = .medium
+	/// 0.2...1, multiplies the virtual controls' own transparency
+	var controlsOpacity: Double = 1
+	/// Sticks stay put in their own spots instead of starting wherever a thumb lands
+	var fixedSticks: Bool = false
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
 	var highRefreshDisplay: Bool = true
 	/// Experimental: make an in-between frame for each pair of real ones (FrameGen.metal)
@@ -172,6 +225,32 @@ struct StreamSettings: Codable, Equatable {
 
 	/// HDR needs HEVC
 	var effectiveCodec: VideoCodecChoice { hdr ? .h265 : codec }
+
+	/// The video and network part, which a console can override
+	var connection: ConnectionSettings {
+		get {
+			ConnectionSettings(
+				resolution: resolution, fps: fps, bitrateMbps: bitrateMbps, codec: codec, hdr: hdr,
+				networkSmoothing: networkSmoothing, takionV20: takionV20)
+		}
+		set {
+			resolution = newValue.resolution
+			fps = newValue.fps
+			bitrateMbps = newValue.bitrateMbps
+			codec = newValue.codec
+			hdr = newValue.hdr
+			networkSmoothing = newValue.networkSmoothing
+			takionV20 = newValue.takionV20
+		}
+	}
+
+	/// These settings with a console's own video and network settings on top
+	func applying(_ custom: ConnectionSettings?) -> StreamSettings {
+		guard let custom else { return self }
+		var settings = self
+		settings.connection = custom
+		return settings
+	}
 
 	init() {}
 
@@ -201,8 +280,12 @@ struct StreamSettings: Codable, Equatable {
 		}
 		phoneMotion = try c.decodeIfPresent(Bool.self, forKey: .phoneMotion) ?? d.phoneMotion
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
+		phoneHaptics = (try? c.decodeIfPresent(PhoneHaptics.self, forKey: .phoneHaptics)) ?? d.phoneHaptics
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		virtualControls = (try? c.decodeIfPresent(VirtualControlsMode.self, forKey: .virtualControls)) ?? d.virtualControls
+		controlsSize = (try? c.decodeIfPresent(ControlsSize.self, forKey: .controlsSize)) ?? d.controlsSize
+		controlsOpacity = min(1, max(0.2, try c.decodeIfPresent(Double.self, forKey: .controlsOpacity) ?? d.controlsOpacity))
+		fixedSticks = try c.decodeIfPresent(Bool.self, forKey: .fixedSticks) ?? d.fixedSticks
 		highRefreshDisplay = try c.decodeIfPresent(Bool.self, forKey: .highRefreshDisplay) ?? d.highRefreshDisplay
 		if let on = try c.decodeIfPresent(Bool.self, forKey: .frameGeneration) {
 			frameGeneration = on
@@ -213,6 +296,17 @@ struct StreamSettings: Codable, Equatable {
 		takionV20 = try c.decodeIfPresent(Bool.self, forKey: .takionV20) ?? d.takionV20
 		networkSmoothing = try c.decodeIfPresent(Bool.self, forKey: .networkSmoothing) ?? d.networkSmoothing
 	}
+}
+
+/// The settings that depend on the network path to a console. Changing any of them reconnects.
+struct ConnectionSettings: Codable, Hashable {
+	var resolution: StreamResolution
+	var fps: Int
+	var bitrateMbps: Int
+	var codec: VideoCodecChoice
+	var hdr: Bool
+	var networkSmoothing: Bool
+	var takionV20: Bool
 }
 
 @Observable

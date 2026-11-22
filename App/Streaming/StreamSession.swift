@@ -88,6 +88,9 @@ final class StreamSession {
 	private(set) var goingToSleep = false
 	/// A short message for the user, e.g. a rest mode request that failed
 	private(set) var notice: String?
+	/// "Optimise connection" while it's watching the stream, and what it found
+	private(set) var connectionCheck: ConnectionCheck?
+	private(set) var connectionCheckResult: ConnectionCheckResult?
 
 	/// Refreshed from `latestConsole` on every connect, so retries follow an IP change
 	private(set) var console: Console
@@ -280,6 +283,7 @@ final class StreamSession {
 		input.selectIsTouchpad = settings.selectIsTouchpad
 		input.phoneMotionEnabled = settings.phoneMotion
 		input.feedback.rumbleEnabled = settings.rumble
+		input.feedback.phoneHapticsScale = settings.phoneHaptics.scale
 		input.onPad = { [weak self] pad in
 			self?.physicalPad = pad
 			self?.sendPad()
@@ -435,6 +439,7 @@ final class StreamSession {
 		settings = new
 		input.selectIsTouchpad = new.selectIsTouchpad
 		input.feedback.rumbleEnabled = new.rumble
+		input.feedback.phoneHapticsScale = new.phoneHaptics.scale
 		renderer?.setDisplayMode(new.displayMode)
 		if needsReconnect, handle != nil || waitingToApplySettings, !goingToSleep {
 			restartForSettings()
@@ -526,6 +531,34 @@ final class StreamSession {
 		DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: work)
 	}
 
+	// MARK: - Optimise connection
+
+	/// Watches the next few seconds of the stream, then suggests settings
+	func startConnectionCheck() {
+		guard handle != nil else { return }
+		connectionCheckResult = nil
+		connectionCheck = ConnectionCheck()
+	}
+
+	func dismissConnectionCheck() {
+		connectionCheck = nil
+		connectionCheckResult = nil
+	}
+
+	private func sampleConnectionCheck(_ stats: StreamStats) {
+		// Paused (folded, another app) or mid-reconnect: nothing useful to measure
+		guard var check = connectionCheck, state == .streaming, !paused else { return }
+		check.add(stats)
+		if check.isComplete {
+			let result = check.result(for: settings)
+			log.notice("Connection check: \(result.title, privacy: .public). \(result.detail, privacy: .public)")
+			connectionCheck = nil
+			connectionCheckResult = result
+		} else {
+			connectionCheck = check
+		}
+	}
+
 	// MARK: - Text input
 
 	/// Sends the whole text whenever it changes
@@ -549,6 +582,8 @@ final class StreamSession {
 	private func teardown() {
 		statsTimer?.invalidate()
 		statsTimer = nil
+		// A new connection starts fresh counters, so a check in progress can't carry on
+		connectionCheck = nil
 		input.stop()
 		physicalPad = CKPadState()
 		resetScreenInput()
@@ -765,5 +800,6 @@ final class StreamSession {
 			lastRepeated = renderer.repeatedFrames
 		}
 		stats = s
+		sampleConnectionCheck(s)
 	}
 }

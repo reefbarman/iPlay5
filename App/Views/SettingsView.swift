@@ -3,6 +3,8 @@ import SwiftUI
 /// Stream settings, shared by the main settings sheet and the in-stream menu.
 struct StreamSettingsForm: View {
 	@Binding var settings: StreamSettings
+	/// Set when the video and network settings shown are this console's own
+	var customConsoleName: String?
 
 	private var upscalingSelection: Binding<UpscalingMode> {
 		Binding(
@@ -10,33 +12,10 @@ struct StreamSettingsForm: View {
 			set: { settings.upscaling = $0 })
 	}
 
+	private var opacityPercent: Int { Int((settings.controlsOpacity * 100).rounded()) }
+
 	var body: some View {
-		Section {
-			Picker("Resolution", selection: $settings.resolution) {
-				ForEach(StreamResolution.allCases) { Text($0.label).tag($0) }
-			}
-			Picker("Frame rate", selection: $settings.fps) {
-				Text("60 fps").tag(60)
-				Text("30 fps").tag(30)
-			}
-			VStack(alignment: .leading) {
-				HStack {
-					Text("Bitrate")
-					Spacer()
-					Text("\(settings.bitrateMbps) Mbps").foregroundStyle(.secondary).monospacedDigit()
-				}
-				Slider(value: Binding(get: { Double(settings.bitrateMbps) }, set: { settings.bitrateMbps = Int($0) }), in: 5...200, step: 5)
-			}
-			Picker("Codec", selection: $settings.codec) {
-				ForEach(VideoCodecChoice.allCases) { Text($0.label).tag($0) }
-			}
-			.disabled(settings.hdr)
-			Toggle("HDR", isOn: $settings.hdr)
-		} header: {
-			Text("Video")
-		} footer: {
-			Text("PS5 Remote Play tops out at 1080p60. The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. Above 100 Mbps needs a strong connection (ideally the PS5 on Ethernet and 5 GHz or 6 GHz Wi-Fi) or you may see stutter. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
-		}
+		VideoSettingsSection(settings: $settings, customConsoleName: customConsoleName)
 
 		Section {
 			Picker("Picture", selection: $settings.displayMode) {
@@ -64,10 +43,11 @@ struct StreamSettingsForm: View {
 		}
 
 		Section {
-			Picker("Virtual controls", selection: $settings.virtualControls) {
-				ForEach(VirtualControlsMode.allCases) { Text($0.label).tag($0) }
-			}
 			Toggle("Rumble", isOn: $settings.rumble)
+			Picker("Phone haptics", selection: $settings.phoneHaptics) {
+				ForEach(PhoneHaptics.allCases) { Text($0.label).tag($0) }
+			}
+			.disabled(!settings.rumble)
 			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
 			NavigationLink { ControlsGuideView() } label: {
@@ -76,13 +56,93 @@ struct StreamSettingsForm: View {
 		} header: {
 			Text("Controller")
 		} footer: {
-			Text("Auto shows virtual controls when no supported controller is connected. Phone gyro works without a controller or with one that has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
+			Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone or GameSir G8+). Phone gyro works without a controller or with one that has no motion sensors, like a GameSir G8+. Hold Select + Start for a second during a stream to open the menu.")
 		}
 
 		Section {
+			Picker("Show", selection: $settings.virtualControls) {
+				ForEach(VirtualControlsMode.allCases) { Text($0.label).tag($0) }
+			}
+			if settings.virtualControls != .never {
+				Picker("Size", selection: $settings.controlsSize) {
+					ForEach(ControlsSize.allCases) { Text($0.label).tag($0) }
+				}
+				VStack(alignment: .leading) {
+					HStack {
+						Text("Opacity")
+						Spacer()
+						Text("\(opacityPercent)%").foregroundStyle(.secondary).monospacedDigit()
+					}
+					Slider(value: $settings.controlsOpacity, in: 0.2...1, step: 0.05)
+				}
+				Toggle("Fixed sticks", isOn: $settings.fixedSticks)
+			}
+		} header: {
+			Text("Virtual controls")
+		} footer: {
+			Text("Auto shows virtual controls when no supported controller is connected. Sticks normally start wherever your thumb lands in the lower half. Fixed sticks stay in one spot on each side instead, and a touch near one moves it straight away.")
+		}
+
+		NetworkSettingsSections(settings: $settings, customConsoleName: customConsoleName)
+
+		Section {
+			Toggle("Frame capture button", isOn: $settings.frameCapture)
+		} header: {
+			Text("Debug")
+		} footer: {
+			Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to Files › On My iPhone › iPlay5 › Frame captures. Uses up to about 800 MB of memory while on.")
+		}
+	}
+}
+
+/// Resolution, frame rate, bitrate, codec and HDR. A console can have its own.
+struct VideoSettingsSection: View {
+	@Binding var settings: StreamSettings
+	var customConsoleName: String?
+
+	var body: some View {
+		Section {
+			Picker("Resolution", selection: $settings.resolution) {
+				ForEach(StreamResolution.allCases) { Text($0.label).tag($0) }
+			}
+			Picker("Frame rate", selection: $settings.fps) {
+				Text("60 fps").tag(60)
+				Text("30 fps").tag(30)
+			}
+			VStack(alignment: .leading) {
+				HStack {
+					Text("Bitrate")
+					Spacer()
+					Text("\(settings.bitrateMbps) Mbps").foregroundStyle(.secondary).monospacedDigit()
+				}
+				Slider(value: Binding(get: { Double(settings.bitrateMbps) }, set: { settings.bitrateMbps = Int($0) }), in: 5...200, step: 5)
+			}
+			Picker("Codec", selection: $settings.codec) {
+				ForEach(VideoCodecChoice.allCases) { Text($0.label).tag($0) }
+			}
+			.disabled(settings.hdr)
+			Toggle("HDR", isOn: $settings.hdr)
+		} header: {
+			Text(customConsoleName.map { "Video for \($0)" } ?? "Video")
+		} footer: {
+			Text("PS5 Remote Play tops out at 1080p60. The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. Above 100 Mbps needs a strong connection (ideally the PS5 on Ethernet and 5 GHz or 6 GHz Wi-Fi) or you may see stutter. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
+			if customConsoleName == nil {
+				Text("To give one console its own video and network settings, swipe left on it in the console list and tap Settings.")
+			}
+		}
+	}
+}
+
+/// Network smoothing and Takion v20. A console can have its own.
+struct NetworkSettingsSections: View {
+	@Binding var settings: StreamSettings
+	var customConsoleName: String?
+
+	var body: some View {
+		Section {
 			Toggle("Smooth network hiccups", isOn: $settings.networkSmoothing)
 		} header: {
-			Text("Network")
+			Text(customConsoleName.map { "Network for \($0)" } ?? "Network")
 		} footer: {
 			Text("For Wi-Fi that stutters. Waits a little longer for late video, keeps the picture moving (briefly smeared) instead of freezing when a frame is lost, and evens out uneven frames by holding one or two back. That adds up to about 17 ms per frame held, only while the network is acting up, and goes back to normal once it's calm. The stats overlay shows what it's doing. Changing this reconnects the stream.")
 		}
@@ -92,13 +152,63 @@ struct StreamSettingsForm: View {
 		} footer: {
 			Text("Offers the PS5 the newer stream protocol that recent official apps use. The PS5 decides; if it doesn't answer, the stream stays on the usual protocol. There's no measured latency gain yet, so compare with it off. The stats overlay shows which one is in use. Changing this reconnects the stream.")
 		}
+	}
+}
 
-		Section {
-			Toggle("Frame capture button", isOn: $settings.frameCapture)
-		} header: {
-			Text("Debug")
-		} footer: {
-			Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to Files › On My iPhone › iPlay5 › Frame captures. Uses up to about 800 MB of memory while on.")
+/// A console's own video and network settings, for when it's on a different
+/// connection to the others (e.g. one on Ethernet, one on Wi-Fi)
+struct ConsoleSettingsView: View {
+	let consoleID: UUID
+
+	@Environment(ConsoleStore.self) private var consoles
+	@Environment(SettingsStore.self) private var store
+	@Environment(\.dismiss) private var dismiss
+
+	private var console: Console? { consoles.consoles.first { $0.id == consoleID } }
+
+	private var custom: Binding<Bool> {
+		Binding(
+			get: { console?.customSettings != nil },
+			set: { on in
+				guard var console else { return }
+				// Start from the shared settings, so turning it on changes nothing until you edit
+				console.customSettings = on ? store.settings.connection : nil
+				consoles.update(console)
+			})
+	}
+
+	/// The shared settings with this console's video and network settings on top.
+	/// Edits only keep the video and network part.
+	private var settings: Binding<StreamSettings> {
+		Binding(
+			get: { store.settings.applying(console?.customSettings) },
+			set: { new in
+				guard var console, console.customSettings != nil else { return }
+				console.customSettings = new.connection
+				consoles.update(console)
+			})
+	}
+
+	var body: some View {
+		NavigationStack {
+			Form {
+				if let console {
+					Section {
+						Toggle("Custom settings", isOn: custom)
+					} footer: {
+						Text("Give \(console.name) its own video and network settings, for example when it's on Ethernet and your other console is on Wi-Fi. Display and controller settings are always shared. While you play \(console.name), changes to video and network settings in the stream menu are saved here.")
+					}
+					if console.customSettings != nil {
+						VideoSettingsSection(settings: settings, customConsoleName: console.name)
+						NetworkSettingsSections(settings: settings, customConsoleName: console.name)
+					}
+				}
+			}
+			.navigationTitle(console?.name ?? "Console")
+			.navigationBarTitleDisplayMode(.inline)
+			.toolbar {
+				ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+			}
 		}
 	}
 }

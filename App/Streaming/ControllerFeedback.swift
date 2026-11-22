@@ -104,6 +104,14 @@ final class ControllerFeedback {
 		}
 	}
 
+	/// The Phone haptics setting: how strongly the phone plays it all, 0...1
+	var phoneHapticsScale: Float = 1 {
+		didSet {
+			let scale = phoneHapticsScale
+			queue.async { self.phoneScale = scale; self.flushPhone() }
+		}
+	}
+
 	private let queue = DispatchQueue(label: "iPlay5.controller-feedback", qos: .userInteractive)
 
 	// Main thread
@@ -127,6 +135,7 @@ final class ControllerFeedback {
 	private var triggerOut: [(Float, Float)] = [(0, 0.5), (0, 0.5)]
 	private var screenTriggers: [Float] = [0, 0]
 	private var motorsEnabled = true
+	private var phoneScale: Float = 1
 	private var hapticScale: Float = 1
 	private var motorEffects: [TriggerEffect] = [.off, .off]
 	private var motorTriggerScale: Float = 1
@@ -360,7 +369,7 @@ final class ControllerFeedback {
 			triggerOut[side] = out
 			let motor = onTriggers ? triggerMotors[side] : phone
 			if onTriggers { motor?.set(intensity: out.0, sharpness: out.1) }
-			if let tap { motor?.tap(intensity: tap.0, sharpness: tap.1) }
+			if let tap { motor?.tap(intensity: tap.0 * (onTriggers ? 1 : phoneScale), sharpness: tap.1) }
 		}
 		flushPhone()
 	}
@@ -436,7 +445,7 @@ final class ControllerFeedback {
 	private func flushPhone() {
 		guard let phone else { return }
 		let strongest = (rumbleOut + triggerOut).max { $0.0 < $1.0 } ?? (0, 0.5)
-		phone.set(intensity: motorsEnabled ? strongest.0 : 0, sharpness: strongest.1)
+		phone.set(intensity: motorsEnabled ? strongest.0 * phoneScale : 0, sharpness: strongest.1)
 	}
 
 	/// Queue

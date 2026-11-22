@@ -41,6 +41,34 @@ struct StreamView: View {
 
 	private var needsController: Bool { !hasController && sessionControlsMode == nil }
 
+	/// This console as currently stored, with any custom settings saved since the screen opened
+	private var storedConsole: Console? { consoleStore.consoles.first { $0.id == console.id } }
+
+	/// The shared settings with this console's own video and network settings on top
+	private var effectiveSettings: StreamSettings {
+		settingsStore.settings.applying(storedConsole?.customSettings)
+	}
+
+	/// Edits go to the console's own settings for video and network when it has them,
+	/// and to the shared settings for everything else
+	private var settingsBinding: Binding<StreamSettings> {
+		Binding(
+			get: { effectiveSettings },
+			set: { new in
+				guard var stored = storedConsole, stored.customSettings != nil else {
+					settingsStore.settings = new
+					return
+				}
+				if stored.customSettings != new.connection {
+					stored.customSettings = new.connection
+					consoleStore.update(stored)
+				}
+				var shared = new
+				shared.connection = settingsStore.settings.connection
+				if shared != settingsStore.settings { settingsStore.settings = shared }
+			})
+	}
+
 	private var wantsVirtualControls: Bool {
 		if marketingScreenshotMode { return true }
 		return switch sessionControlsMode ?? settingsStore.settings.virtualControls {
@@ -103,8 +131,10 @@ struct StreamView: View {
 			if asleep { dismiss() }
 		}
 		.onChange(of: phone.isHot) { _, hot in
-			if hot, settingsStore.settings.fps > 30 { flashHeatWarning() }
+			if hot, effectiveSettings.fps > 30 { flashHeatWarning() }
 		}
+		// From the menu, the FG corner or an "Optimise connection" suggestion
+		.onChange(of: effectiveSettings) { _, new in session?.apply(new) }
 		.onChange(of: scenePhase) { _, phase in
 			if phase == .active { refreshControllerPresence() }
 			else { session?.setPaused(true) }
@@ -135,6 +165,7 @@ struct StreamView: View {
 					highRefresh: session.settings.highRefreshDisplay,
 					acceptsInput: acceptsScreenInput,
 					virtualControls: showsVirtualControls,
+					controlsStyle: VirtualControlsStyle(effectiveSettings),
 					videoAspectForLetterbox: letterboxAspect(for: session),
 					onFrameGenerationTap: { activateFrameGenerationShortcut(session, pinned: pinsStreamButtons) },
 					onVirtualPad: { [weak session] in session?.setVirtualPad($0) },
@@ -183,6 +214,16 @@ struct StreamView: View {
 					.transition(.opacity)
 			}
 
+			if let session, !marketingScreenshotMode, !folded, !portrait {
+				if let check = session.connectionCheck {
+					connectionCheckProgress(check, session: session)
+						.transition(.opacity)
+				} else if let result = session.connectionCheckResult {
+					connectionCheckResult(result, session: session)
+						.transition(.opacity)
+				}
+			}
+
 			if let session, let text = session.keyboardText, !folded, !portrait {
 				KeyboardOverlay(
 					initialText: text,
@@ -222,7 +263,7 @@ struct StreamView: View {
 	}
 
 	private func startSession() {
-		let session = StreamSession(console: console, settings: settingsStore.settings)
+		let session = StreamSession(console: storedConsole ?? console, settings: effectiveSettings)
 		if let orientation = interfaceOrientation {
 			session.input.interfaceOrientation = orientation
 		}
@@ -363,9 +404,9 @@ struct StreamView: View {
 	}
 
 	private func activateFrameGenerationShortcut(_ session: StreamSession, pinned: Bool = false) {
+		// The stream picks the change up from onChange(of: effectiveSettings)
 		if pinned || showFGButton {
 			settingsStore.settings.frameGeneration.toggle()
-			session.apply(settingsStore.settings)
 		}
 		revealFGButton()
 	}
@@ -495,6 +536,76 @@ struct StreamView: View {
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 		.padding(.top, 16)
 		.allowsHitTesting(false)
+	}
+
+	// MARK: - Optimise connection
+
+	private func connectionCheckProgress(_ check: ConnectionCheck, session: StreamSession) -> some View {
+		HStack(spacing: 10) {
+			ProgressView(value: check.progress)
+				.progressViewStyle(.circular)
+				.tint(.white)
+			VStack(alignment: .leading, spacing: 2) {
+				Text("Checking the connection… \(check.secondsLeft) s").font(.subheadline.weight(.semibold))
+				Text("Keep playing, ideally something busy").font(.caption).foregroundStyle(.white.opacity(0.7))
+			}
+			Button("Cancel") { session.dismissConnectionCheck() }
+				.font(.subheadline.weight(.semibold))
+				.buttonStyle(.bordered)
+				.tint(.white)
+		}
+		.foregroundStyle(.white)
+		.padding(.horizontal, 14)
+		.padding(.vertical, 8)
+		.background(.black.opacity(0.7), in: Capsule())
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+		.padding(.top, 16)
+	}
+
+	private func connectionCheckResult(_ result: ConnectionCheckResult, session: StreamSession) -> some View {
+		let (symbol, colour): (String, Color) = switch result.verdict {
+		case .good, .roomToGrow: ("checkmark.circle.fill", .green)
+		case .minorHiccups: ("exclamationmark.circle.fill", .yellow)
+		case .tooHigh: ("exclamationmark.triangle.fill", .orange)
+		case .inconclusive: ("questionmark.circle.fill", .secondary)
+		}
+		return VStack(alignment: .leading, spacing: 10) {
+			Label {
+				Text(result.title).font(.headline)
+			} icon: {
+				Image(systemName: symbol).foregroundStyle(colour)
+			}
+			Text(result.detail)
+				.font(.subheadline)
+				.fixedSize(horizontal: false, vertical: true)
+			HStack {
+				if result.hasSuggestion {
+					Button(result.applyLabel) {
+						var settings = effectiveSettings
+						result.apply(to: &settings)
+						session.dismissConnectionCheck()
+						settingsBinding.wrappedValue = settings
+					}
+					.buttonStyle(.borderedProminent)
+					Button("Keep current") { session.dismissConnectionCheck() }
+						.buttonStyle(.bordered)
+				} else {
+					Button("OK") { session.dismissConnectionCheck() }
+						.buttonStyle(.borderedProminent)
+				}
+				Spacer()
+				Button("Check again") { session.startConnectionCheck() }
+					.buttonStyle(.bordered)
+			}
+			if result.bitrateMbps != nil || result.networkSmoothing != nil {
+				Text("Applying reconnects the stream.").font(.caption).foregroundStyle(.secondary)
+			}
+		}
+		.padding(16)
+		.frame(maxWidth: 460)
+		.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+		.padding(.top, 16)
 	}
 
 	private func hintLabel(_ text: String) -> some View {
@@ -681,7 +792,8 @@ struct StreamView: View {
 	}
 
 	private var menu: some View {
-		@Bindable var store = settingsStore
+		let settings = settingsBinding
+		let customName = storedConsole?.customSettings != nil ? console.name : nil
 		return NavigationStack {
 			Form {
 				Section {
@@ -709,19 +821,32 @@ struct StreamView: View {
 					} label: {
 						Label("Temperature", systemImage: "thermometer.medium")
 					}
-					if phone.isHot && store.settings.fps > 30 {
-						Button("Switch to 30 fps to cool down") { store.settings.fps = 30 }
+					if phone.isHot && settings.wrappedValue.fps > 30 {
+						Button("Switch to 30 fps to cool down") { settings.wrappedValue.fps = 30 }
 					}
 				} header: {
 					Text("Phone")
 				}
-				if let sessionControlsMode, sessionControlsMode != store.settings.virtualControls {
+				Section {
+					Button {
+						session?.startConnectionCheck()
+						showMenu = false
+					} label: {
+						Label("Optimise connection", systemImage: "wifi")
+					}
+					.disabled(session?.state != .streaming || session?.connectionCheck != nil)
+				} header: {
+					Text("Connection")
+				} footer: {
+					Text("Watches the next \(ConnectionCheck.duration) seconds of the stream for lost video, then suggests a bitrate (and network smoothing) you can apply with one tap. Play something with plenty of movement while it checks, since the PS5 sends much less on menus and quiet scenes.")
+				}
+				if let sessionControlsMode, sessionControlsMode != settingsStore.settings.virtualControls {
 					Section {
 						LabeledContent("Virtual controls this session", value: sessionControlsMode.label)
 						Button("Use saved virtual controls setting") { self.sessionControlsMode = nil }
 					}
 				}
-				StreamSettingsForm(settings: $store.settings)
+				StreamSettingsForm(settings: settings, customConsoleName: customName)
 				Section {
 					Toggle("Marketing screenshot mode", isOn: $marketingScreenshotMode)
 					Button {
@@ -739,7 +864,6 @@ struct StreamView: View {
 			.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)
 		}
-		.onChange(of: store.settings) { _, new in session?.apply(new) }
 	}
 
 	private func saveMarketingScreenshot() async {
@@ -1014,6 +1138,7 @@ private struct MetalStreamView: UIViewRepresentable {
 	let highRefresh: Bool
 	let acceptsInput: Bool
 	let virtualControls: Bool
+	let controlsStyle: VirtualControlsStyle
 	let videoAspectForLetterbox: CGFloat?
 	let onFrameGenerationTap: () -> Void
 	let onVirtualPad: (VirtualPadState) -> Void
@@ -1039,6 +1164,7 @@ private struct MetalStreamView: UIViewRepresentable {
 		uiView.onFrameGenerationTap = onFrameGenerationTap
 		uiView.onVirtualPad = onVirtualPad
 		uiView.onReset = onReset
+		uiView.setControlsStyle(controlsStyle)
 		uiView.setInputMode(acceptsInput: acceptsInput, virtualControls: virtualControls)
 	}
 }
