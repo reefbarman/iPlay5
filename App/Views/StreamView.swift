@@ -369,6 +369,21 @@ struct StreamView: View {
 				.padding(.horizontal, 10)
 				.frame(minWidth: 52, minHeight: 30)
 				.background(colour, in: Capsule())
+				.overlay(alignment: .leading) {
+					if showSettingsHint && showFGButton && !pinned {
+						HStack(spacing: 10) {
+							hintLabel("Tap here for frame generation")
+							Image(systemName: "arrow.right")
+								.font(.title3.weight(.bold))
+								.accessibilityHidden(true)
+						}
+						.foregroundStyle(.white)
+						.fixedSize()
+						.alignmentGuide(.leading) { $0[.trailing] + 10 }
+						.allowsHitTesting(false)
+						.transition(.opacity)
+					}
+				}
 				.opacity(visible ? 1 : 0)
 				.padding(.bottom, 12)
 				.padding(.trailing, 16)
