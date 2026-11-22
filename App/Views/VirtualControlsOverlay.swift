@@ -40,8 +40,7 @@ final class VirtualControlsOverlay: UIView {
 	private var controls: [Control] = []
 	private var dpadCentre = CGPoint.zero
 	private var dpadRect = CGRect.zero
-	private(set) var touchpadRect = CGRect.zero
-	private var touchpadPressed = false
+
 	private var area = CGRect.null
 	private var pad = VirtualPadState()
 	private static let stickRadius: CGFloat = 42
@@ -60,7 +59,8 @@ final class VirtualControlsOverlay: UIView {
 		area = safeArea
 		let x = safeArea.minX + 68, right = safeArea.maxX - 68
 		let row = safeArea.maxY - 111
-		let shoulders = max(safeArea.minY + 32, bounds.minY + 76)
+		// Sit just above the D-pad and face buttons, even on the taller inner screen.
+		let shoulders = row - 86
 		let bottom = safeArea.maxY - 26
 		let middle = safeArea.midX
 		func rect(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat = 44, _ h: CGFloat = 44) -> CGRect {
@@ -90,24 +90,17 @@ final class VirtualControlsOverlay: UIView {
 			Control("PS", rect(middle, bottom - 59, 46, 44), .button(CK_BUTTON_PS.rawValue), rounded: true),
 			Control("Options", rect(middle + 65, bottom - 59, 64, 44), .button(CK_BUTTON_OPTIONS.rawValue), rounded: true),
 		]
-		touchpadRect = rect(middle, bottom - 4, 176, 54)
-		setNeedsDisplay()
-	}
-
-	func setTouchpadPressed(_ pressed: Bool) {
-		guard pressed != touchpadPressed else { return }
-		touchpadPressed = pressed
 		setNeedsDisplay()
 	}
 
 	func reset() {
 		fingers.removeAll()
 		pad = VirtualPadState()
-		touchpadPressed = false
 		setNeedsDisplay()
 	}
 
-	func begin(_ id: ObjectIdentifier, at point: CGPoint) -> VirtualPadState? {
+	/// A fixed control can claim a touch even when its initial state is neutral.
+	func begin(_ id: ObjectIdentifier, at point: CGPoint, allowsStick: Bool) -> (handled: Bool, state: VirtualPadState?) {
 		if let control = controls.first(where: { $0.rect.contains(point) }) {
 			switch control.action {
 			case .button(let bit): fingers[id] = .button(bit)
@@ -117,14 +110,15 @@ final class VirtualControlsOverlay: UIView {
 		} else if dpadRect.contains(point) {
 			fingers[id] = .dpad(direction(at: point))
 		} else {
+			guard allowsStick else { return (false, nil) }
 			let left = point.x < bounds.midX
 			guard !fingers.values.contains(where: {
 				if case .stick(let side, _, _) = $0 { return side == left }
 				return false
-			}) else { return nil }
+			}) else { return (false, nil) }
 			fingers[id] = .stick(left: left, origin: point, location: point)
 		}
-		return publish()
+		return (true, publish())
 	}
 
 	func move(_ id: ObjectIdentifier, to point: CGPoint) -> VirtualPadState? {
@@ -185,7 +179,7 @@ final class VirtualControlsOverlay: UIView {
 			}
 			drawControl(control.rect, radius: control.rounded ? 10 : control.rect.height / 2, pressed: pressed, label: control.label)
 		}
-		drawControl(touchpadRect, radius: 12, pressed: touchpadPressed, label: "Touchpad")
+
 		let radius = Self.stickRadius
 		for case .stick(_, let origin, let location) in fingers.values {
 			let dx = location.x - origin.x, dy = location.y - origin.y

@@ -673,8 +673,13 @@ final class StreamMetalView: UIView {
 		CGRect(x: bounds.minX, y: bounds.minY, width: Self.cornerSize.width, height: Self.cornerSize.height)
 	}
 
+	/// The upper half maps to the whole DualSense touchpad in either controller mode.
+	private var touchpadRect: CGRect {
+		CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height / 2)
+	}
+
 	private func touchpadPoint(_ p: CGPoint) -> (UInt16, UInt16) {
-		let area = controls.isHidden ? bounds : controls.touchpadRect
+		let area = touchpadRect
 		guard area.width > 0, area.height > 0 else { return (0, 0) }
 		let nx = min(max((p.x - area.minX) / area.width, 0), 1)
 		let ny = min(max((p.y - area.minY) / area.height, 0), 1)
@@ -693,14 +698,17 @@ final class StreamMetalView: UIView {
 				onLeftCornerTap?()
 				continue
 			}
-			if !controls.isHidden, !controls.touchpadRect.contains(p) {
-				if let state = controls.begin(ObjectIdentifier(touch), at: p) { onVirtualPad?(state) }
-				continue
+			let inTouchpad = touchpadRect.contains(p)
+			if !controls.isHidden {
+				// Fixed controls win, but a floating stick can't start in the touchpad.
+				let result = controls.begin(ObjectIdentifier(touch), at: p, allowsStick: !inTouchpad)
+				if let state = result.state { onVirtualPad?(state) }
+				if result.handled { continue }
 			}
+			guard inTouchpad else { continue }
 			let used = Set(tracked.values.map(\.slot))
 			guard let slot = [10, 11].first(where: { !used.contains($0) }) else { continue }
 			tracked[ObjectIdentifier(touch)] = Tracked(slot: slot, start: p, time: touch.timestamp)
-			if !controls.isHidden { controls.setTouchpadPressed(true) }
 			let (x, y) = touchpadPoint(p)
 			onTouch?(.down(slot: slot, x: x, y: y))
 		}
@@ -743,9 +751,12 @@ final class StreamMetalView: UIView {
 			   touch.timestamp - t.time <= Self.tapMaxDuration {
 				onTap?(t.slot)
 			} else {
+				if allowsTap {
+					let (x, y) = touchpadPoint(point)
+					onTouch?(.move(slot: t.slot, x: x, y: y))
+				}
 				onTouch?(.up(slot: t.slot))
 			}
 		}
-		controls.setTouchpadPressed(!controls.isHidden && !tracked.isEmpty)
 	}
 }

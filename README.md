@@ -49,7 +49,7 @@ https://raw.githubusercontent.com/reefbarman/iPlay5/main/altstore-source.json
 3. Your PS5 should appear under Console. If it doesn't, use **Enter IP address manually**.
 4. Tap **Sign in with PlayStation** to fill in your account ID. If your passkey or password manager doesn't work in the sign-in window, use the **Safari** option and paste the URL you end up on.
 5. On the PS5, open **Settings › System › Remote Play › Link Device**, enter the PIN in the app and tap **Link**.
-6. Tap **Play**. If you don't have a controller connected, choose **Use virtual controls**, **Connect without controls**, or **Cancel**. With virtual controls showing, start a stick anywhere in the open space on its side of the screen. Tap or swipe the marked centre touchpad to use it.
+6. Tap **Play**. If you don't have a controller connected, choose **Use virtual controls**, **Connect without controls**, or **Cancel**. Tap the upper half of the screen to click the PS5 touchpad, or slide your finger to swipe, with or without virtual controls. With virtual controls showing, start a stick in the open space on either side of the lower half.
 
 While streaming: tap the top-right corner, then the gear, to open settings. Or hold **Select + Start** for a second. Tap the top-left corner, then the PlayStation logo, to press the PS button.
 
