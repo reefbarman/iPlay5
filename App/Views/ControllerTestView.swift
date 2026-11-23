@@ -3,6 +3,7 @@ import GameController
 import os
 import simd
 import SwiftUI
+import UIKit.UIGestureRecognizerSubclass
 
 /// Reads the controller the same way a stream does, so what shows here is what
 /// the PS5 would get, and plays feedback through the same path the console's
@@ -68,19 +69,24 @@ final class ControllerTester {
 
 	var touchpadClicked: Bool { isPressed(CK_BUTTON_TOUCHPAD) || screenClick }
 
-	/// Attitude from the gyro, kept level by gravity (a Mahony filter), in DualSense axes:
-	/// x right, y out of the face, z towards the player
+	/// Attitude from adding up the gyro, in DualSense axes: x right, y out of the face, z towards the player.
+	/// A gyro reads slightly off zero even when still, which would turn the picture forever: while the
+	/// controller sits still that offset is measured and taken off, and the picture holds where it is.
 	private struct Motion {
 		var gyro = SIMD3<Float>.zero
 		var accel = SIMD3<Float>(0, 1, 0)
 		/// Controller to world; the world is how the controller sat at the first sample
 		var attitude = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-		/// Which way is up in that world
-		var up: SIMD3<Float>?
 		/// The attitude shown front-on
 		var level = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 		/// Seconds until the attitude now is taken as level, nil once done
 		var levelIn: Float? = 0.6
+		/// What the gyro reads at rest
+		var bias = SIMD3<Float>.zero
+		/// Recent averages, to tell when the controller is sitting still
+		var gyroMean: SIMD3<Float>?
+		var accelMean = SIMD3<Float>.zero
+		var stillFor: Float = 0
 		var lastTimestamp: UInt32?
 		var scheduled = false
 
@@ -88,18 +94,28 @@ final class ControllerTester {
 			self.gyro = gyro
 			self.accel = accel
 			defer { lastTimestamp = timestamp }
-			let g = simd_length(accel)
-			if up == nil {
-				guard g > 0.5 else { return }
-				up = accel / g
-			}
-			guard let last = lastTimestamp, let up else { return }
+			guard let last = lastTimestamp else { return }
 			let dt = min(0.05, Float(timestamp &- last) / 1_000_000)
 			guard dt > 0 else { return }
-			var w = gyro
-			// Nudge towards where gravity says up is, unless the controller is being swung about
-			if g > 0.8 && g < 1.2 {
-				w += 1.5 * simd_cross(accel / g, attitude.inverse.act(up))
+
+			let k = min(1, dt / 0.15)
+			if let mean = gyroMean {
+				let steady = simd_length(gyro - mean) < 0.03 && simd_length(accel - accelMean) < 0.03
+					// A real slow turn isn't an offset
+					&& simd_length(mean) < 0.12
+				stillFor = steady ? stillFor + dt : 0
+				gyroMean = mean + (gyro - mean) * k
+				accelMean += (accel - accelMean) * k
+			} else {
+				gyroMean = gyro
+				accelMean = accel
+			}
+
+			var w = gyro - bias
+			if stillFor > 0.3, let mean = gyroMean {
+				// Settle the offset onto the resting reading over about a second, and don't turn
+				bias += (mean - bias) * min(1, dt / 1)
+				w = .zero
 			}
 			let rate = simd_length(w)
 			if rate > 0 {
@@ -372,16 +388,11 @@ struct ControllerTestView: View {
 
 	var body: some View {
 		GeometryReader { geo in
-			if geo.size.width > geo.size.height {
-				HStack(spacing: 0) {
-					live.frame(width: geo.size.width * 0.48)
-					form
-				}
-			} else {
-				VStack(spacing: 0) {
-					live.frame(height: min(geo.size.height * 0.55, geo.size.width / 1.5 + 120))
-					form
-				}
+			let landscape = geo.size.width > geo.size.height
+			VStack(spacing: 0) {
+				live(squareHeight: landscape ? 64 : 100)
+					.frame(height: landscape ? geo.size.height * 0.62 : min(geo.size.height * 0.55, geo.size.width / 1.5 + 120))
+				form
 			}
 		}
 		.background(Color(.systemGroupedBackground))
@@ -398,8 +409,8 @@ struct ControllerTestView: View {
 		}
 	}
 
-	/// The 3D controller and the touch square, kept on screen above (or beside) the list
-	private var live: some View {
+	/// The 3D controller and the touch square, kept on screen above the list
+	private func live(squareHeight: CGFloat) -> some View {
 		VStack(spacing: 8) {
 			ControllerSceneView(state: sceneState)
 				.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -413,7 +424,7 @@ struct ControllerTestView: View {
 			TouchSquare(
 				onTouch: { tester.screenTouch($0) },
 				onTap: { tester.screenTap(slot: $0) })
-				.frame(maxHeight: 100)
+				.frame(maxWidth: squareHeight * 5, maxHeight: squareHeight)
 				.padding(.horizontal, 16)
 				.padding(.bottom, 8)
 		}
@@ -507,6 +518,38 @@ struct ControllerTestView: View {
 	}
 }
 
+/// A settings row that opens the Controller Test over the whole screen, so dragging on its
+/// touch square can't pull the settings sheet around
+struct ControllerTestLink<Content: View>: View {
+	var onActiveChange: ((Bool) -> Void)?
+	@ViewBuilder var label: Content
+	@State private var open = false
+
+	var body: some View {
+		Button { open = true } label: {
+			HStack {
+				label
+				Spacer()
+				Image(systemName: "chevron.right")
+					.font(.footnote.weight(.semibold))
+					.foregroundStyle(.tertiary)
+			}
+			.contentShape(Rectangle())
+		}
+		.foregroundStyle(.primary)
+		.fullScreenCover(isPresented: $open) {
+			NavigationStack {
+				ControllerTestView(onActiveChange: onActiveChange)
+					.toolbar {
+						ToolbarItem(placement: .confirmationAction) {
+							Button("Done") { open = false }
+						}
+					}
+			}
+		}
+	}
+}
+
 /// A bar from the centre for a signed value
 private struct AxisRow: View {
 	let label: String
@@ -545,7 +588,6 @@ private struct TouchSquare: View {
 
 	var body: some View {
 		TouchSurface(onTouch: onTouch, onTap: onTap)
-			.aspectRatio(2, contentMode: .fit)
 			.background {
 				RoundedRectangle(cornerRadius: 14, style: .continuous)
 					.fill(Color(.tertiarySystemFill))
@@ -575,7 +617,52 @@ private struct TouchSurface: UIViewRepresentable {
 		let view = View()
 		view.backgroundColor = .clear
 		view.isMultipleTouchEnabled = true
+		view.addGestureRecognizer(HoldGesture())
 		return view
+	}
+
+	/// Claims a finger on the square the moment it lands, so nothing else on screen
+	/// (scrolling, a sheet, swiping back) can take the drag. The view still gets the touches.
+	private final class HoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate {
+		init() {
+			super.init(target: nil, action: nil)
+			cancelsTouchesInView = false
+			delaysTouchesBegan = false
+			delaysTouchesEnded = false
+			delegate = self
+		}
+
+		private var fingers = 0
+
+		override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+			fingers += touches.count
+			state = state == .possible ? .began : .changed
+		}
+
+		override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+			state = .changed
+		}
+
+		override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+			fingers -= touches.count
+			state = fingers <= 0 ? .ended : .changed
+		}
+
+		override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+			state = .cancelled
+		}
+
+		override func reset() {
+			super.reset()
+			fingers = 0
+		}
+
+		override func canBePrevented(by other: UIGestureRecognizer) -> Bool { false }
+		override func canPrevent(_ other: UIGestureRecognizer) -> Bool { true }
+
+		func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+			true
+		}
 	}
 
 	func updateUIView(_ view: View, context: Context) {

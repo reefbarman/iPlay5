@@ -118,7 +118,7 @@ struct StreamSettingsForm: View {
 				Label("Controls Guide", systemImage: "gamecontroller")
 			}
 			if showsControllerTest {
-				NavigationLink { ControllerTestView(onActiveChange: onControllerTest) } label: {
+				ControllerTestLink(onActiveChange: onControllerTest) {
 					Label("Controller Test", systemImage: "dot.radiowaves.left.and.right")
 				}
 			}
