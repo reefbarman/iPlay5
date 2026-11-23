@@ -1,0 +1,19 @@
+// Dark scheme with PlayStation-blue accents, based on Just the Docs' dark.scss.
+$color-scheme: dark;
+$body-background-color: #0b1020;
+$body-heading-color: #ffffff;
+$body-text-color: #c3cbdd;
+$link-color: #7aa2ff;
+$nav-child-link-color: #8a94ad;
+$sidebar-color: #0e1530;
+$base-button-color: #1a2442;
+$btn-primary-color: #2f5bea;
+$code-background-color: #0d1117;
+$code-linenumber-color: #e6edf3;
+$feedback-color: #0a1128;
+$table-background-color: #121a33;
+$search-background-color: #121a33;
+$search-result-preview-color: #c3cbdd;
+$border-color: #1f2a48;
+
+@import "./vendor/accessible-pygments/github-dark";
