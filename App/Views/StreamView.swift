@@ -134,7 +134,7 @@ struct StreamView: View {
 	private var canCaptureStream: Bool {
 		guard let session else { return false }
 		return session.state == .streaming && !session.goingToSleep && session.keyboardText == nil
-			&& !folded && !portrait && scenePhase == .active
+			&& !session.pictureInPictureActive && !folded && !portrait && scenePhase == .active
 	}
 
 	private var acceptsScreenInput: Bool { canCaptureStream && !showMenu }
@@ -243,6 +243,7 @@ struct StreamView: View {
 			if let session, let renderer = session.renderer {
 				MetalStreamView(
 					renderer: renderer,
+					pictureInPictureLayer: session.pictureInPicture.layer,
 					highRefresh: session.settings.highRefreshDisplay,
 					acceptsInput: acceptsScreenInput,
 					virtualControls: showsVirtualControls,
@@ -261,6 +262,17 @@ struct StreamView: View {
 
 			if let session {
 				overlay(for: session)
+			}
+
+			if session?.pictureInPictureActive == true {
+				VStack(spacing: 8) {
+					Image(systemName: "pip").font(.largeTitle)
+					Text("Playing in Picture in Picture")
+				}
+				.foregroundStyle(.secondary)
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.background(Color.black)
+				.ignoresSafeArea()
 			}
 
 			if showSettingsHint && !showMenuButton && !marketingScreenshotMode {
@@ -960,6 +972,18 @@ struct StreamView: View {
 							session.toggleMicMuted()
 						}
 					}
+					#if DEBUG
+					if let session {
+						Button("Picture in Picture (prototype)") {
+							showMenu = false
+							session.startPictureInPicture()
+						}
+						.disabled(session.pictureInPictureUnavailableReason != nil)
+						if let reason = session.pictureInPictureUnavailableReason {
+							Text(reason).font(.footnote).foregroundStyle(.secondary)
+						}
+					}
+					#endif
 					Button("Put console in rest mode") {
 						session?.putConsoleToSleep()
 						showMenu = false
@@ -1312,6 +1336,7 @@ private struct KeyboardOverlay: View {
 /// Hosts the CAMetalLayer-backed view in SwiftUI.
 private struct MetalStreamView: UIViewRepresentable {
 	let renderer: MetalRenderer
+	let pictureInPictureLayer: CALayer
 	let highRefresh: Bool
 	let acceptsInput: Bool
 	let virtualControls: Bool
@@ -1333,6 +1358,7 @@ private struct MetalStreamView: UIViewRepresentable {
 
 	func updateUIView(_ uiView: StreamMetalView, context: Context) {
 		uiView.highRefresh = highRefresh
+		uiView.pictureInPictureLayer = pictureInPictureLayer
 		uiView.onTouch = onTouch
 		uiView.onTap = onTap
 		uiView.onCornerTap = onCornerTap

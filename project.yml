@@ -57,6 +57,10 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         UIStatusBarHidden: false
         UIViewControllerBasedStatusBarAppearance: true
+        # Audio, AirPlay, and Picture in Picture. Ordinary backgrounding still stops
+        # the audio engine (AudioOutput.suspended), so only PiP keeps the app running.
+        UIBackgroundModes:
+          - audio
         # Lets ProMotion run above 60 Hz
         CADisableMinimumFrameDurationOnPhone: true
         NSLocalNetworkUsageDescription: iPlay5 finds and connects to your PS5 on the local network for Remote Play.

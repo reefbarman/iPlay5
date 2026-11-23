@@ -40,10 +40,19 @@ final class VideoDecoder {
 	}
 
 	/// Returns false if the frame couldn't be decoded and an IDR frame should be requested.
-	func decode(_ bytes: UnsafePointer<UInt8>, count: Int) -> Bool {
+	///
+	/// - Parameters:
+	///   - draw: decode for the Metal renderer (`onFrame`)
+	///   - sample: also gets the compressed frame and whether it's a keyframe
+	///     (Picture in Picture). Return false from it to ask for a keyframe.
+	func decode(
+		_ bytes: UnsafePointer<UInt8>, count: Int, draw: Bool = true,
+		sample sampleSink: ((CMSampleBuffer, Bool) -> Bool)? = nil
+	) -> Bool {
 		let nals = Self.splitAnnexB(bytes, count: count)
 		var newParams: [Int: Data] = [:]
 		var payload: [Range<Int>] = []
+		var keyframe = false
 
 		for nal in nals where !nal.isEmpty {
 			let header = bytes[nal.lowerBound]
@@ -52,14 +61,18 @@ final class VideoDecoder {
 				switch type {
 				case 32, 33, 34: newParams[type] = Data(bytes: bytes + nal.lowerBound, count: nal.count)  // VPS SPS PPS
 				case 35: continue  // AUD
-				default: payload.append(nal)
+				default:
+					if (16...21).contains(type) { keyframe = true }  // IRAP
+					payload.append(nal)
 				}
 			} else {
 				let type = Int(header & 0x1F)
 				switch type {
 				case 7, 8: newParams[type] = Data(bytes: bytes + nal.lowerBound, count: nal.count)  // SPS PPS
 				case 9: continue  // AUD
-				default: payload.append(nal)
+				default:
+					if type == 5 { keyframe = true }  // IDR
+					payload.append(nal)
 				}
 			}
 		}
@@ -76,10 +89,14 @@ final class VideoDecoder {
 			// No stream configuration yet: wait for (and ask for) a keyframe
 			return format != nil
 		}
+		guard let sample = makeSample(bytes, nals: payload, format: format) else { return false }
+
+		var wanted = true
+		if let sampleSink, !sampleSink(sample, keyframe) { wanted = false }
+		guard draw else { return wanted }
+
 		if session == nil, !createSession(format) { return false }
 		guard let session else { return false }
-
-		guard let sample = makeSample(bytes, nals: payload, format: format) else { return false }
 
 		let start = CACurrentMediaTime()
 		var infoFlags = VTDecodeInfoFlags()
@@ -104,7 +121,7 @@ final class VideoDecoder {
 			}
 			return false
 		}
-		return true
+		return wanted
 	}
 
 	// MARK: - Setup
@@ -189,9 +206,13 @@ final class VideoDecoder {
 
 		var sample: CMSampleBuffer?
 		var size = total
+		// Arrival time on the host clock. VideoToolbox ignores it; Picture in Picture's
+		// display layer runs a host-clock timebase, so frames show as they arrive.
+		var timing = CMSampleTimingInfo(
+			duration: .invalid, presentationTimeStamp: CMClockGetTime(CMClockGetHostTimeClock()), decodeTimeStamp: .invalid)
 		guard CMSampleBufferCreateReady(
 			allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1,
-			sampleTimingEntryCount: 0, sampleTimingArray: nil, sampleSizeEntryCount: 1, sampleSizeArray: &size,
+			sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &size,
 			sampleBufferOut: &sample) == noErr
 		else { return nil }
 		return sample

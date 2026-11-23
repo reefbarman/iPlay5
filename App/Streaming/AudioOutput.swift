@@ -21,6 +21,7 @@ final class AudioOutput {
 	private let scratch: UnsafeMutablePointer<Int16>
 	private var observers: [NSObjectProtocol] = []
 	private var isMuted = false
+	private var isSuspended = false
 
 	/// Read from the render thread. Set before start(), cleared after stop().
 	private var session: OpaquePointer?
@@ -123,10 +124,27 @@ final class AudioOutput {
 			micLock.withLock { micSession = session }
 			configureMic()
 		}
+		guard !isSuspended else { return }
 		do {
 			try engine.start()
 		} catch {
 			log.error("Audio engine: \(error.localizedDescription, privacy: .public)")
+		}
+	}
+
+	/// In the background without Picture in Picture: the engine stays stopped, so the
+	/// audio background mode doesn't keep the app running on silence. Main thread.
+	var suspended: Bool {
+		get { isSuspended }
+		set {
+			guard newValue != isSuspended else { return }
+			isSuspended = newValue
+			guard source != nil else { return }
+			if newValue {
+				engine.stop()
+			} else {
+				restart(reason: "back from the background")
+			}
 		}
 	}
 
@@ -263,7 +281,7 @@ final class AudioOutput {
 
 	/// Reconnects our node (the output format may have changed) and starts the engine again.
 	private func restart(reason: String) {
-		guard let source, session != nil, let format = Self.format else { return }
+		guard !isSuspended, let source, session != nil, let format = Self.format else { return }
 		log.notice("Restarting audio: \(reason, privacy: .public)")
 		activateAudioSession()
 		engine.stop()

@@ -855,6 +855,17 @@ final class StreamMetalView: UIView {
 	}
 	private var tracked: [ObjectIdentifier: Tracked] = [:]
 
+	/// Picture in Picture's video layer. Sits behind the Metal layer: AVKit needs it
+	/// on screen to start from, and floats its picture away from here.
+	var pictureInPictureLayer: CALayer? {
+		didSet {
+			guard pictureInPictureLayer !== oldValue else { return }
+			oldValue?.removeFromSuperlayer()
+			if let pictureInPictureLayer { layer.insertSublayer(pictureInPictureLayer, below: metalLayer) }
+			setNeedsLayout()
+		}
+	}
+
 	/// Ask a ProMotion screen for 120 Hz while this view is on screen
 	var highRefresh = true {
 		didSet { if highRefresh != oldValue { updateDisplayLink() } }
@@ -929,6 +940,7 @@ final class StreamMetalView: UIView {
 		CATransaction.setDisableActions(true)
 		metalLayer.frame = bounds
 		metalLayer.contentsScale = scale
+		pictureInPictureLayer?.frame = bounds
 		let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
 		renderer.setDrawableSize(size)
 		CATransaction.commit()

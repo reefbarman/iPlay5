@@ -95,6 +95,8 @@ final class StreamSession {
 	private(set) var micActive = false
 	/// The user muted the mic. Kept across reconnects.
 	private(set) var micMuted = false
+	/// Showing in Picture in Picture: game audio keeps playing, input and Metal are idle
+	private(set) var pictureInPictureActive = false
 
 	/// Refreshed from `latestConsole` on every connect, so retries follow an IP change
 	private(set) var console: Console
@@ -147,6 +149,11 @@ final class StreamSession {
 	@ObservationIgnored private var qualityLostAtStart = 0
 	/// What we last told the console about the mic: live or muted. nil until we've said anything.
 	@ObservationIgnored private var micConsoleLive: Bool?
+	@ObservationIgnored let pictureInPicture = StreamPictureInPicture()
+	/// The PiP window's pause button: local picture and sound only
+	@ObservationIgnored private var pictureInPicturePaused = false
+	/// Controller input was suspended for PiP and needs starting again
+	@ObservationIgnored private var inputSuspendedForPiP = false
 
 	/// What chiaki's callbacks point at: this session plus which connection they belong to.
 	/// Tearing a connection down makes chiaki send a "stopped" event that reaches the main
@@ -174,6 +181,17 @@ final class StreamSession {
 				self?.enterForeground()
 			},
 		]
+		pictureInPicture.requestKeyframe = { [weak self] in
+			guard let handle = self?.handle else { return }
+			ck_session_request_idr(handle)
+		}
+		pictureInPicture.onStart = { [weak self] in self?.pictureInPictureStarted() }
+		pictureInPicture.onStop = { [weak self] restored in self?.pictureInPictureStopped(restored: restored) }
+		pictureInPicture.onFail = { [weak self] message in self?.showNotice(message) }
+		pictureInPicture.onPlayingChanged = { [weak self] playing in
+			self?.pictureInPicturePaused = !playing
+			self?.applyAudioMute()
+		}
 	}
 
 	deinit {
@@ -321,7 +339,7 @@ final class StreamSession {
 		if !controllerLent { input.start() }
 
 		audio.start(session: created, mic: settings.microphone)
-		audio.muted = paused
+		applyAudioMute()
 		micConsoleLive = nil
 		applyMicState()
 
@@ -364,6 +382,17 @@ final class StreamSession {
 	private func enterBackground() {
 		backgrounded = true
 		releaseInput()
+		// Picture in Picture keeps the app running (and playing) for as long as it's up
+		if pictureInPicture.phase == .active { return }
+		// PiP can't start from the background
+		pictureInPicture.stop()
+		beginBackgroundGrace()
+	}
+
+	/// The ordinary background policy: silence, and a limited time before we disconnect
+	private func beginBackgroundGrace() {
+		// The audio background mode (for PiP) would otherwise keep a silent engine running
+		audio.suspended = true
 		guard handle != nil, backgroundTask == .invalid else { return }
 		backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep the stream connected") { [weak self] in
 			self?.backgroundTimeExpired()
@@ -373,6 +402,7 @@ final class StreamSession {
 
 	private func enterForeground() {
 		backgrounded = false
+		audio.suspended = false
 		endBackgroundTask()
 		if resumeInForeground {
 			resumeInForeground = false
@@ -383,7 +413,7 @@ final class StreamSession {
 	}
 
 	private func backgroundTimeExpired() {
-		if handle != nil, !goingToSleep {
+		if handle != nil, !goingToSleep, !pictureInPictureActive {
 			log.notice("Background time ran out, disconnecting until the app returns")
 			let wasPlaying: Bool
 			switch state {
@@ -542,11 +572,78 @@ final class StreamSession {
 		guard paused != self.paused else { return }
 		self.paused = paused
 		renderer?.setPaused(paused)
-		audio.muted = paused
+		applyAudioMute()
 		applyMicState()
 		if !paused, let handle {
 			// We dropped frames while paused, so get a clean keyframe
 			ck_session_request_idr(handle)
+		}
+	}
+
+	/// Paused mutes the game, except in Picture in Picture, which plays on unless its own pause is pressed
+	private func applyAudioMute() {
+		audio.muted = pictureInPictureActive ? pictureInPicturePaused : paused
+	}
+
+	// MARK: - Picture in Picture (main thread)
+
+	/// Why the prototype can't start right now, or nil if it can
+	var pictureInPictureUnavailableReason: String? {
+		if !StreamPictureInPicture.isSupported { return "Not available on this device." }
+		if state != .streaming || handle == nil || goingToSleep { return "Available while streaming." }
+		if settings.effectiveCodec != .h264 { return "Prototype: needs H.264 without HDR." }
+		if micActive { return "Prototype: turn the microphone off in settings first." }
+		return nil
+	}
+
+	func startPictureInPicture() {
+		if let reason = pictureInPictureUnavailableReason {
+			showNotice(reason)
+			return
+		}
+		pictureInPicture.start()
+	}
+
+	private func pictureInPictureStarted() {
+		pictureInPictureActive = true
+		pictureInPicturePaused = false
+		// Nothing reaches the controller or the screen from here: let go of everything
+		releaseInput()
+		if !controllerLent, handle != nil {
+			input.suspend()
+			inputSuspendedForPiP = true
+		}
+		endBackgroundTask()
+		audio.suspended = false
+		applyAudioMute()
+		applyMicState()
+	}
+
+	private func pictureInPictureStopped(restored: Bool) {
+		guard pictureInPictureActive else { return }
+		pictureInPictureActive = false
+		pictureInPicturePaused = false
+		renderer?.resetSmoothing()
+		if inputSuspendedForPiP {
+			inputSuspendedForPiP = false
+			if handle != nil, !controllerLent { input.start() }
+		}
+		applyAudioMute()
+		applyMicState()
+		if let handle {
+			// Metal's decoder missed everything PiP showed
+			ck_session_request_idr(handle)
+		}
+		// Closed from another app: the ordinary background policy takes over.
+		// Expanding brings the app forward, but don't leave audio running if it doesn't.
+		guard backgrounded else { return }
+		if restored {
+			DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+				guard let self, self.backgrounded, !self.pictureInPictureActive else { return }
+				self.beginBackgroundGrace()
+			}
+		} else {
+			beginBackgroundGrace()
 		}
 	}
 
@@ -600,7 +697,7 @@ final class StreamSession {
 	private func applyMicState() {
 		let streaming = state == .streaming && handle != nil
 		micActive = streaming && audio.micEnabled
-		let live = micActive && !micMuted && !paused
+		let live = micActive && !micMuted && !paused && !pictureInPictureActive
 		audio.micLive = live
 		// The first unmute attaches the mic on the console. Don't attach one just to mute it.
 		guard let handle, streaming, micConsoleLive != live, live || micConsoleLive != nil else { return }
@@ -667,6 +764,9 @@ final class StreamSession {
 		statsTimer = nil
 		// A new connection starts fresh counters, so a check in progress can't carry on
 		connectionCheck = nil
+		// PiP shows this connection only. An active window reports its stop shortly.
+		pictureInPicture.stop()
+		inputSuspendedForPiP = false
 		input.stop()
 		physicalPad = CKPadState()
 		gyroStickPosition = .zero
@@ -696,9 +796,19 @@ final class StreamSession {
 			lostFrames &+= lost
 			renderer?.noteLostFrames()
 		}
+		guard let decoder else { return true }
+		// Picture in Picture gets the compressed frames and decodes them itself.
+		// Metal keeps drawing until the window takes over.
+		let route = pictureInPicture.route()
+		if route.pictureInPicture {
+			let pip = pictureInPicture
+			return decoder.decode(buf, count: size, draw: route.draw && !backgrounded) { sample, keyframe in
+				pip.enqueue(sample, keyframe: keyframe)
+			}
+		}
 		// Background decoding fails, and each failure would ask for another keyframe.
 		// Coming back unpauses the stream, which asks for one.
-		guard let decoder, !backgrounded else { return true }
+		guard !backgrounded else { return true }
 		return decoder.decode(buf, count: size)
 	}
 
@@ -930,7 +1040,7 @@ final class StreamSession {
 	private static let qualityWarmupSeconds = 5
 
 	private func sampleQuality(_ s: StreamStats) {
-		guard state == .streaming, !paused, !backgrounded else { return }
+		guard state == .streaming, !paused, !backgrounded, !pictureInPictureActive else { return }
 		qualityStreamingSeconds += 1
 		let lost = s.lostFrames + s.failedFrames
 		if qualityStreamingSeconds == Self.qualityWarmupSeconds { qualityLostAtStart = lost }
