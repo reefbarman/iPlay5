@@ -989,9 +989,31 @@ final class StreamMetalView: UIView {
 		return CGRect(x: bounds.maxX - size.width, y: bounds.maxY - size.height, width: size.width, height: size.height)
 	}
 
-	/// The upper half maps to the whole DualSense touchpad in either controller mode.
+	/// With virtual controls, the upper half maps to the whole DualSense touchpad and the
+	/// lower half is left for sticks and buttons. With a physical controller, the whole
+	/// picture is the touchpad.
 	private var touchpadRect: CGRect {
-		CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height / 2)
+		guard controls.isHidden else {
+			return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: bounds.height / 2)
+		}
+		return videoRect
+	}
+
+	/// Where the picture is drawn: letterboxed or pillarboxed when fitted, otherwise the whole view
+	private var videoRect: CGRect {
+		guard let aspect = videoAspectForLetterbox, aspect > 0, bounds.width > 0, bounds.height > 0 else { return bounds }
+		if bounds.width / bounds.height > aspect {
+			let width = bounds.height * aspect
+			return CGRect(x: bounds.midX - width / 2, y: bounds.minY, width: width, height: bounds.height)
+		}
+		let height = bounds.width / aspect
+		return CGRect(x: bounds.minX, y: bounds.midY - height / 2, width: bounds.width, height: height)
+	}
+
+	/// Whether a touch here starts a touchpad touch. With a physical controller, touches in
+	/// the black bars count too and land on the nearest edge of the touchpad.
+	private func startsTouchpadTouch(at p: CGPoint) -> Bool {
+		controls.isHidden ? bounds.contains(p) : touchpadRect.contains(p)
 	}
 
 	private func touchpadPoint(_ p: CGPoint) -> (UInt16, UInt16) {
@@ -1014,7 +1036,7 @@ final class StreamMetalView: UIView {
 				onLeftCornerTap?()
 				continue
 			}
-			let inTouchpad = touchpadRect.contains(p)
+			let inTouchpad = startsTouchpadTouch(at: p)
 			if !controls.isHidden {
 				let key = ObjectIdentifier(touch)
 				let inFrameGenerationCorner = frameGenerationCornerRect.contains(p)
