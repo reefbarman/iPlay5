@@ -9,7 +9,7 @@ iPlay5 is a free, open-source PS5 Remote Play app for iPhone and iPad. Stream yo
 > [!IMPORTANT]
 > **Play with a physical controller or virtual controls.** Auto keeps the virtual controls out of the way when you have a supported controller connected, such as a DualSense, Xbox controller, or Backbone. Change this in Settings › Virtual controls.
 >
-> **iPhone Duo recommendation:** the [GameSir G8+](https://www.gamesir.hk/) **Bluetooth** version works well clipped onto the Duo. Avoid the Apple-specific (USB-C) G8 version, because it doesn't work with the Duo. Pair the G8+ in its iOS mode (blue Home light), where it shows up as "DUOLSHOK 4 Wireless Controller", and iPlay5 uses its built-in gyro for motion controls and gyro aiming.
+> **iPhone Duo recommendation:** the [GameSir G8+](https://gamesir.com/products/g8plus-bluetooth-mobile-controller) **Bluetooth** version works well clipped onto the Duo. Avoid the Apple-specific (USB-C) G8 version, because it doesn't work with the Duo. Pair the G8+ in its iOS mode (blue Home light), where it shows up as "DUOLSHOK 4 Wireless Controller", and iPlay5 uses its built-in gyro for motion controls and gyro aiming.
 >
 > **3D-printable shim:** the G8+'s grip can press the Duo's side button and trigger Siri mid-game. I made a free [iPhone Duo shim for the GameSir G8+](https://makerworld.com/en/models/3648382-iphone-duo-shim-for-gamesir-g8-no-siri-presses) on MakerWorld that stops it.
 

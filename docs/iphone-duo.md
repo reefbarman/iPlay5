@@ -13,7 +13,7 @@ On other iPhones, menus are portrait and the stream plays in landscape. On iPad,
 
 ## Controller
 
-The [GameSir G8+](https://www.gamesir.hk/) **Bluetooth** version clips onto the Duo well. Avoid the Apple-specific (USB-C) G8, which doesn't work with the Duo.
+The [GameSir G8+](https://gamesir.com/products/g8plus-bluetooth-mobile-controller) **Bluetooth** version clips onto the Duo well. Avoid the Apple-specific (USB-C) G8, which doesn't work with the Duo.
 
 - Pair the G8+ in its iOS mode (blue Home light), where it shows up as "DUOLSHOK 4 Wireless Controller".
 - iPlay5 uses its built-in gyro for motion controls and [gyro aiming](controllers.md#gyro-aiming), and its own rumble motors for vibration.
