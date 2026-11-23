@@ -18,7 +18,8 @@ permissions:
 
 jobs:
   chiakikit:
-    runs-on: macos-latest
+    # The app uses iOS 27 SDK APIs, which macos-latest's Xcode doesn't have
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v7
 
