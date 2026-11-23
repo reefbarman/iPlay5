@@ -54,6 +54,18 @@ pressed.touches = [.init(x: 0.25, y: 0.4, fromScreen: true), .init(x: 0.75, y: 0
 pressed.triggerLook = .resistance
 save("pressed", pressed)
 
+// A finger swiping across the pad on screen, and one on the controller's pad, then a snapshot of the trail
+var swipe = ControllerScene.State()
+for frame in 0...45 {
+	let f = Float(frame) / 45
+	swipe.touches = [
+		.init(x: 0.1 + 0.8 * f, y: 0.5 + 0.3 * sin(f * 6), fromScreen: true),
+		.init(x: 0.8 - 0.5 * f, y: 0.2 + 0.1 * f, fromScreen: false),
+	]
+	controller.apply(swipe, time: 10 + Double(frame) / 60)
+}
+save("swipe", swipe, time: 10.75)
+
 var turned = pressed
 turned.orientation = simd_quatf(angle: 0.5, axis: SIMD3(1, 0, 0)) * simd_quatf(angle: -0.6, axis: SIMD3(0, 1, 0))
 turned.buzz = .init(left: 1, right: 1, hz: 16)

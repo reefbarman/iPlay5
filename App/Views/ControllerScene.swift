@@ -85,8 +85,24 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	private var ripples: [SCNNode] = []
 	/// Glows behind L1, R1, L2 and R2, which hide behind the controller when it faces you
 	private var halos: [SCNNode] = []
-	/// Glows on the touchpad where it's clicked
-	private var clickSpots: [SCNNode] = []
+	/// A blue layer shaped to the touchpad's surface, shown when it's clicked
+	private var padLight: SCNNode?
+	private var padLightLevel: Float = 0
+	private var lastTime: TimeInterval?
+
+	/// Where fingers have been lately, fading out
+	private struct TrailPoint {
+		var x: Float
+		var y: Float
+		var time: TimeInterval
+		var fromScreen: Bool
+	}
+
+	private var trail: [TrailPoint] = []
+	private var trailDots: [SCNNode] = []
+	/// Where each finger last left a trail point
+	private var trailEnds: [SIMD2<Float>?] = []
+	private static let trailSeconds: TimeInterval = 1.5
 
 	// MARK: - Colours
 
@@ -101,6 +117,9 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	private static let symbol = rgb(0.72, 0.73, 0.77)
 	private static let lightbarOff = rgb(0.55, 0.57, 0.62)
 	static let accent = rgb(0.2, 0.5, 1)
+	/// Fingers on the touchpad on screen, and on the controller's own
+	private static let screenFinger = rgb(0.1, 0.75, 1)
+	private static let padFinger = rgb(1, 0.55, 0.1)
 	/// Pressed and pulled on the white parts, where a glow barely shows
 	private static let shellPressed = rgb(0.1, 0.42, 1)
 	private static let faceColours: [Control: CGColor] = [
@@ -268,22 +287,17 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			model.addChildNode(light)
 			playerLights.append(light)
 		}
-		for _ in 0..<2 {
-			let plane = SCNPlane(width: 0.3, height: 0.3)
-			let m = SCNMaterial()
-			m.lightingModel = .constant
-			// Laid over the white pad, where adding light would barely show: solid blue, faded out by the glow's alpha
-			m.diffuse.contents = Self.shellPressed
-			m.transparent.contents = Self.glowImage
-			m.transparencyMode = .aOne
-			m.blendMode = .alpha
-			m.writesToDepthBuffer = false
-			plane.materials = [m]
-			let spot = SCNNode(geometry: plane)
-			spot.renderingOrder = 10
-			spot.isHidden = true
-			model.addChildNode(spot)
-			clickSpots.append(spot)
+		if let pad = touchpadGeometry {
+			padLight = makePadLight(pad)
+			for _ in 0..<160 {
+				let plane = SCNPlane(width: 0.05, height: 0.05)
+				plane.materials = [Self.overlayMaterial(Self.accent, mask: Self.glowImage)]
+				let dot = SCNNode(geometry: plane)
+				dot.renderingOrder = 11
+				dot.isHidden = true
+				model.addChildNode(dot)
+				trailDots.append(dot)
+			}
 		}
 		// Behind and above each shoulder button and trigger, so the glow shows over the top edge
 		for (name, back, size) in [("LeftShoulder", Float(0.05), CGFloat(0.75)), ("RightShoulder", 0.05, 0.75),
@@ -352,6 +366,72 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	}
 
 	var cameraNode: SCNNode? { scene.rootNode.childNode(withName: "camera", recursively: false) }
+
+	/// Solid colour laid over the model, faded out by the mask's alpha
+	private static func overlayMaterial(_ colour: CGColor, mask: CGImage?) -> SCNMaterial {
+		let m = SCNMaterial()
+		m.lightingModel = .constant
+		m.diffuse.contents = colour
+		m.transparent.contents = mask
+		m.transparencyMode = .aOne
+		m.blendMode = .alpha
+		m.writesToDepthBuffer = false
+		return m
+	}
+
+	/// A grid that follows the touchpad's curved top just above it, so lighting it up covers the pad
+	/// exactly. (Tinting the pad itself shows the ragged edge it was cut from the shell with.)
+	private func makePadLight(_ pad: SCNNode) -> SCNNode {
+		let columns = 32
+		let rows = 16
+		var vertices: [SCNVector3] = []
+		var uvs: [CGPoint] = []
+		for r in 0...rows {
+			for c in 0...columns {
+				let u = Float(c) / Float(columns)
+				let v = Float(r) / Float(rows)
+				var p = padSurface(pad, x: u, y: v)
+				p.z += 0.003
+				vertices.append(p)
+				uvs.append(CGPoint(x: CGFloat(u), y: CGFloat(v)))
+			}
+		}
+		var indices: [UInt16] = []
+		for r in 0..<rows {
+			for c in 0..<columns {
+				let a = UInt16(r * (columns + 1) + c)
+				let b = a + 1
+				let d = a + UInt16(columns + 1)
+				let e = d + 1
+				indices += [a, d, b, b, d, e]
+			}
+		}
+		let geometry = SCNGeometry(
+			sources: [SCNGeometrySource(vertices: vertices), SCNGeometrySource(textureCoordinates: uvs)],
+			elements: [SCNGeometryElement(indices: indices, primitiveType: .triangles)])
+		let m = Self.overlayMaterial(Self.shellPressed, mask: Self.padMask)
+		m.isDoubleSided = true
+		geometry.materials = [m]
+		let node = SCNNode(geometry: geometry)
+		node.renderingOrder = 10
+		node.isHidden = true
+		model.addChildNode(node)
+		return node
+	}
+
+	/// The touchpad's outline, rounded at the corners and soft at the edges
+	private static let padMask: CGImage? = {
+		let w = 256
+		let h = 128
+		guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+			space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+		else { return nil }
+		ctx.setFillColor(CGColor(gray: 1, alpha: 1))
+		ctx.setShadow(offset: .zero, blur: 6, color: CGColor(gray: 1, alpha: 1))
+		ctx.addPath(CGPath(roundedRect: CGRect(x: 5, y: 5, width: w - 10, height: h - 10), cornerWidth: 22, cornerHeight: 22, transform: nil))
+		ctx.fillPath()
+		return ctx.makeImage()
+	}()
 
 	/// A soft round glow, fading to nothing at the edge (black as well as clear, for adding)
 	private static let glowImage: CGImage? = {
@@ -517,7 +597,9 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 		}
 		for (i, light) in playerLights.enumerated() { light.isHidden = !lit.contains(i) }
 
-		placeFingers(s.touches, clicked: s.pressed.contains(.touchpad))
+		let dt = lastTime.map { Float(max(0, min(0.1, time - $0))) } ?? 0
+		lastTime = time
+		placeFingers(s.touches, clicked: s.pressed.contains(.touchpad), time: time, dt: dt)
 		shake(s.buzz, time: time)
 	}
 
@@ -533,20 +615,57 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 		return model.convertPosition(surface, from: pad)
 	}
 
-	private func placeFingers(_ touches: [Touch], clicked: Bool) {
+	private func placeFingers(_ touches: [Touch], clicked: Bool, time: TimeInterval, dt: Float) {
 		guard let pad = touchpadGeometry else { return }
-		// Clicked: glow under each finger, or the middle when there are none
-		let spots = !clicked ? [] : touches.isEmpty ? [(Float(0.5), Float(0.5))] : touches.map { ($0.x, $0.y) }
-		for (i, spot) in clickSpots.enumerated() {
-			guard i < spots.count else {
-				spot.isHidden = true
+		// The whole pad lights up when clicked, fading in and out quickly
+		padLightLevel += ((clicked ? 1 : 0) - padLightLevel) * min(1, dt * 25)
+		if dt == 0 { padLightLevel = clicked ? 1 : 0 }
+		padLight?.opacity = CGFloat(padLightLevel * 0.6)
+		padLight?.isHidden = padLightLevel < 0.01
+
+		// Trail: a point every little way along each finger's path
+		let spacing: Float = 0.012
+		if trailEnds.count < touches.count { trailEnds += Array(repeating: nil, count: touches.count - trailEnds.count) }
+		for i in trailEnds.indices where i >= touches.count { trailEnds[i] = nil }
+		for (i, t) in touches.enumerated() {
+			let now = SIMD2(t.x, t.y)
+			guard let end = trailEnds[i] else {
+				trail.append(TrailPoint(x: t.x, y: t.y, time: time, fromScreen: t.fromScreen))
+				trailEnds[i] = now
 				continue
 			}
-			var p = padSurface(pad, x: spots[i].0, y: spots[i].1)
-			p.z += 0.004
-			spot.position = p
-			spot.isHidden = false
+			let gap = simd_distance(end, now)
+			// A big jump is a different finger, not a swipe
+			guard gap >= spacing, gap < 0.3 else {
+				if gap >= 0.3 { trailEnds[i] = now }
+				continue
+			}
+			let steps = Int(gap / spacing)
+			for s in 1...steps {
+				let p = end + (now - end) * (Float(s) / Float(steps))
+				trail.append(TrailPoint(x: p.x, y: p.y, time: time, fromScreen: t.fromScreen))
+			}
+			trailEnds[i] = now
 		}
+		trail.removeAll { time - $0.time > Self.trailSeconds }
+		if trail.count > trailDots.count { trail.removeFirst(trail.count - trailDots.count) }
+		for (i, dot) in trailDots.enumerated() {
+			guard i < trail.count else {
+				dot.isHidden = true
+				continue
+			}
+			let t = trail[i]
+			let life = Float(1 - (time - t.time) / Self.trailSeconds)
+			var p = padSurface(pad, x: t.x, y: t.y)
+			p.z += 0.005
+			dot.position = p
+			let size = CGFloat(0.5 + 0.5 * life)
+			dot.scale = SCNVector3(size, size, 1)
+			dot.opacity = CGFloat(life * 0.85)
+			dot.geometry?.firstMaterial?.diffuse.contents = t.fromScreen ? Self.screenFinger : Self.padFinger
+			dot.isHidden = false
+		}
+
 		for (i, dot) in fingers.enumerated() {
 			guard i < touches.count else {
 				dot.isHidden = true
@@ -555,7 +674,7 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			let t = touches[i]
 			dot.position = padSurface(pad, x: t.x, y: t.y)
 			dot.isHidden = false
-			let colour = t.fromScreen ? Self.rgb(0.2, 0.85, 1) : Self.rgb(1, 0.6, 0.15)
+			let colour = t.fromScreen ? Self.screenFinger : Self.padFinger
 			if let m = dot.geometry?.firstMaterial {
 				m.diffuse.contents = colour
 				m.emission.contents = colour
