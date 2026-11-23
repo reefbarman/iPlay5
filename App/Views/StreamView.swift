@@ -44,9 +44,31 @@ struct StreamView: View {
 	@State private var hintShown = false
 	/// Auto bitrate's key for this console on the Wi-Fi network the stream started on
 	@State private var bitrateKey: String?
+	/// Lets the controller press the buttons on the connecting and error overlays
+	@State private var gamepad = ListGamepadNavigator()
 
 	private var needsController: Bool { !hasController && sessionControlsMode == nil }
 
+	/// The controller drives the status overlays only while one is showing and uncovered.
+	/// While streaming, its input goes to the console instead.
+	private var overlayGamepadActive: Bool {
+		guard let session, !folded, !portrait, !showMenu, scenePhase == .active else { return false }
+		switch session.state {
+		case .idle, .connecting, .needsPIN, .reconnecting, .applyingSettings, .ended: return true
+		case .streaming, .consoleAsleep: return false
+		}
+	}
+
+	private func overlayConfirm() {
+		if case .ended = session?.state { session?.reconnect() }
+	}
+
+	private func overlayCancel() {
+		switch session?.state {
+		case .idle, .connecting, .needsPIN, .reconnecting, .applyingSettings, .ended: dismiss()
+		default: break
+		}
+	}
 
 	/// This console as currently stored, with any custom settings saved since the screen opened
 	private var storedConsole: Console? { consoleStore.consoles.first { $0.id == console.id } }
@@ -133,8 +155,16 @@ struct StreamView: View {
 		.onAppear {
 			AppDelegate.setStreaming(true)
 			refreshControllerPresence()
+			gamepad.onConfirm = overlayConfirm
+			gamepad.onCancel = overlayCancel
+			gamepad.start()
+			gamepad.setActive(overlayGamepadActive)
 		}
-		.onDisappear(perform: stop)
+		.onDisappear {
+			gamepad.stop()
+			stop()
+		}
+		.onChange(of: overlayGamepadActive) { _, active in gamepad.setActive(active) }
 		.onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
 			// A flip between the two landscapes keeps the same window size, so pick
 			// up iOS's new orientation (for controller motion) once it has rotated
@@ -728,7 +758,7 @@ struct StreamView: View {
 			VStack(spacing: 12) {
 				ProgressView().controlSize(.large)
 				Text("Connecting to \(console.name)…").foregroundStyle(.secondary)
-				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+				Button { dismiss() } label: { gamepadLabel("Cancel", gamepad.cancelSymbol) }.buttonStyle(.bordered)
 			}
 		case .streaming where session.goingToSleep, .consoleAsleep:
 			VStack(spacing: 12) {
@@ -754,7 +784,7 @@ struct StreamView: View {
 					.textFieldStyle(.roundedBorder)
 					.frame(width: 200)
 				HStack {
-					Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+					Button { dismiss() } label: { gamepadLabel("Cancel", gamepad.cancelSymbol) }.buttonStyle(.bordered)
 					Button("OK") {
 						session.submitPIN(pin)
 						pin = ""
@@ -769,7 +799,7 @@ struct StreamView: View {
 				ProgressView().controlSize(.large)
 				Text("Connection lost. Reconnecting…").font(.headline)
 				Text("Attempt \(attempt) of \(StreamSession.maxReconnectAttempts)").foregroundStyle(.secondary)
-				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+				Button { dismiss() } label: { gamepadLabel("Cancel", gamepad.cancelSymbol) }.buttonStyle(.bordered)
 			}
 			.padding(24)
 			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -780,7 +810,7 @@ struct StreamView: View {
 				if attempt > 1 {
 					Text("\(console.name) isn't ready yet. Attempt \(attempt)").foregroundStyle(.secondary)
 				}
-				Button("Cancel") { dismiss() }.buttonStyle(.bordered)
+				Button { dismiss() } label: { gamepadLabel("Cancel", gamepad.cancelSymbol) }.buttonStyle(.bordered)
 			}
 			.padding(24)
 			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -793,12 +823,26 @@ struct StreamView: View {
 					Text("Disconnected")
 				}
 				HStack {
-					Button("Close") { dismiss() }.buttonStyle(.bordered)
-					Button("Reconnect") { session.reconnect() }.buttonStyle(.borderedProminent)
+					Button { dismiss() } label: { gamepadLabel("Close", gamepad.cancelSymbol) }.buttonStyle(.bordered)
+					Button { session.reconnect() } label: { gamepadLabel("Reconnect", gamepad.confirmSymbol) }
+						.buttonStyle(.borderedProminent)
 				}
 			}
 			.padding(24)
 			.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+		}
+	}
+
+	/// A button title with the controller button that presses it, when a controller is connected
+	@ViewBuilder
+	private func gamepadLabel(_ title: String, _ symbol: String?) -> some View {
+		if let symbol {
+			HStack(spacing: 6) {
+				Image(systemName: symbol)
+				Text(title)
+			}
+		} else {
+			Text(title)
 		}
 	}
 
