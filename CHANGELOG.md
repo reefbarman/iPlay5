@@ -2,6 +2,21 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.12.0 (2026-11-23)
+
+iPlay5 now runs as a proper iPad app, and the stream screen fits better on every iPhone, not just the iPhone Duo.
+
+### New
+- **iPad support:** iPlay5 runs full screen on iPad instead of in a small iPhone-sized window. It works in any orientation, and in Split View and Stage Manager windows. The stream plays in whatever shape the window is, with the picture fitted to it.
+- On iPad, messages and settings talk about your iPad rather than your phone. The gyro setting is **iPad gyro for motion controls**, and screenshots and frame captures go to **Files › On My iPad › iPlay5**.
+
+### Fixes
+- The "Tap this corner" hints at the start of a stream could run off the edges of smaller iPhones. They now switch to short labels when the full wording doesn't fit.
+
+### Notes
+- **Phone haptics** is hidden on devices without a vibration motor, such as iPads. Controller rumble still works.
+- On iPhone, the stream still plays in landscape, and on the iPhone Duo it still plays on the inner screen.
+
 ## v0.11.1 (2026-11-23)
 
 Adds the iOS 27 Home button setting that was missing from v0.11.0, so your controller's Home button can open the PS5 menu.
