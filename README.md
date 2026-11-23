@@ -7,7 +7,7 @@ PS5 Remote Play for iPhone over your local network, built on [chiaki-ng](https:/
 <p align="center"><img src="docs/images/iphone-duo-hero.webp" width="800" alt="A PS5 game streaming to iPlay5 on the iPhone Duo with virtual controls visible"></p>
 
 > [!IMPORTANT]
-> **Play with a physical controller or virtual controls.** Auto keeps the virtual controls out of the way when you have a supported controller connected, such as a DualSense, Xbox controller, or Backbone. Change this in Settings › Controller.
+> **Play with a physical controller or virtual controls.** Auto keeps the virtual controls out of the way when you have a supported controller connected, such as a DualSense, Xbox controller, or Backbone. Change this in Settings › Virtual controls.
 >
 > **iPhone Duo recommendation:** the [GameSir G8+](https://www.gamesir.hk/) **Bluetooth** version works well clipped onto the Duo. Avoid the Apple-specific (USB-C) G8 version, because it doesn't work with the Duo. Pair the G8+ in its iOS mode (blue Home light), where it shows up as "DUOLSHOK 4 Wireless Controller", and iPlay5 uses its built-in gyro for motion controls and gyro aiming.
 >
@@ -17,26 +17,20 @@ Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation"
 
 ## Features
 
-- **Picture:** hardware HEVC/H.264 decode drawn with Metal at the panel's native resolution, up to 1080p60 (the PS5's Remote Play limit) and up to 200 Mbps (the console may cap it lower). Choose Sharp (Catmull-Rom), Bilinear, MetalFX Spatial, or MetalFX 4K upscaling (SDR and HDR) on supported devices.
-- **HDR:** 10-bit HDR10 straight to the display with EDR. Toggle it per stream.
-- **Fit or Zoom to fill:** see the whole picture with black bars, or fill the screen and crop the overflow.
-- **Controllers:** the controller's home/logo button acts as the PS button, and there's an on-screen PS button for controllers that don't have one. On iOS 27, iOS keeps the Home button for its Game Overlay until you let apps use it: iPlay5 offers to open that setting the first time you stream with a controller, and it's also under Settings › Controller › Home Button Settings. Motion controls use your controller's gyro when it has one (DualSense, DualShock 4, GameSir G8+ and other controllers iOS reads motion from), and the phone's gyro when it doesn't. Rumble works on any controller with vibration. On a DualSense, the touchpad and motion are passed through, haptics play on the grips with the game's texture and pitch, adaptive triggers get each effect's shape along the trigger's travel, and the lightbar and player LEDs follow the game. The PS5's vibration and trigger intensity settings apply. Xbox controllers play trigger effects on their trigger motors, as vibration or a click where a trigger would give way. A DualShock 4's lightbar follows the game too. With virtual controls, or a controller without motors (clip-ons like the Backbone), rumble, haptics and trigger effects play on the phone instead, at Full or Light strength or turned off with Settings › Controller › Phone haptics. On the console list, the d-pad or left stick picks a console and ✕ (or A) wakes or plays it.
-- **Gyro aiming (off by default):** turn the controller, or the phone if the controller has no motion sensors, to move the right stick in games that don't support gyro. Use it always or only while holding L2 or R1, look around by turning, tilting or both, and tune sensitivity, up/down speed, the game's dead zone and fine aim. Settings › Controller.
-- **Microphone (off by default):** talk in game and party chat through the phone's mic. A button in the bottom-left corner of the stream (and the stream menu) mutes it. Echo cancellation runs only when the game plays from the phone's speaker, so headphones keep full-quality game audio. On Bluetooth headphones the phone's mic is used, except on iOS 26 with AirPods that support high-quality recording. Settings › Audio.
-- **Stats:** Simple shows resolution, fps, bitrate, ping and loss on one line. Advanced adds codec, decode time, lost frames, frame generation and network smoothing detail, and the connected controller. They sit in the black bar above the picture when there is one. Settings › Display.
-- **Virtual controls your way:** Small, Medium or Large, adjustable opacity, and sticks that either start wherever your thumb lands or stay fixed in one spot. Settings › Virtual controls.
-- **Auto bitrate (on by default):** remembers the bitrate that works for each console on each Wi-Fi network. After a few minutes of smooth play it goes up about a fifth next time (up to 100 Mbps, or your own bitrate if that's higher), and after a session that drops video it comes down a quarter. It never changes mid-game, and moving the bitrate slider while you play sets it for that network. Settings › Video.
-- **Optimise connection:** in the stream menu, it watches 20 seconds of play for lost video, then suggests a bitrate (and network smoothing) you can apply with one tap. It only runs when you ask.
-- **Settings per console:** swipe left on a console and tap Settings to give it its own video and network settings, for example when one PS5 is on Ethernet and another on Wi-Fi. While you play it, changes to those settings in the stream menu are saved to that console.
-- **Quick app switches:** the stream stays connected while you briefly check another app. If iOS ends the background time, it reconnects when you come back instead of showing a frozen picture.
-- **Touchscreen as touchpad:** swipe to move a finger (up to two), quick tap to click.
-- **Easy setup:** finds your PS5 on Wi-Fi automatically and follows it if its IP address changes. Sign in to PSN to fill in your account ID (passkeys and password managers work through the Safari option). Wake from rest mode.
-- **Frame generation (experimental):** makes an in-between frame for each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. Tap the bottom-right corner while streaming to turn it on and off and compare.
-- **Smooth network hiccups (optional, off by default):** for Wi-Fi that stutters. Waits a little longer for video that arrives late, keeps the picture moving (briefly smeared) instead of freezing when a frame is lost, and evens out uneven frames by holding one or two back. That costs about 17 ms per frame held, only while the network is acting up, and it goes back to normal once things are calm. Settings › Network.
-- **Takion v20 (experimental, off by default):** offers the PS5 the newer stream protocol that recent official apps use. The console decides, and the stream stays on the usual protocol if it says no. There's no measured latency difference yet, so treat it as something to compare rather than a speed-up. Settings › Network.
-- **iPhone Duo:** streams on the inner screen, and the stream stays landscape once it's sideways. On the outer screen you can browse, link and wake consoles. Tap Play there and it connects as soon as you unfold. Folding mid-game pauses the stream.
+The highlights are below. The [feature guides](docs/README.md) cover everything in detail, and the [changelog](CHANGELOG.md) lists what changed in each release.
 
-Local network only. PSN internet play isn't included.
+- **Sharp, low-latency picture:** hardware H.265/H.264 decoding drawn with Metal at the screen's native resolution, up to 1080p60 (the PS5's Remote Play limit) and up to 200 Mbps. HDR10, Fit or Zoom to fill, Sharp or MetalFX upscaling, and a 120 Hz screen on ProMotion iPhones. [Picture](docs/picture.md)
+- **Frame generation (experimental):** an in-between frame for each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. [Picture](docs/picture.md#frame-generation-experimental)
+- **Full DualSense support:** touchpad, motion, haptics with the game's texture, adaptive triggers and the lightbar all follow the game. Xbox trigger motors play trigger effects, and controllers without motors get haptics on the phone instead. [Controllers](docs/controllers.md)
+- **Gyro aiming:** turn the controller (or the phone) to aim with the right stick, even in games without gyro support, always or only while holding L2 or R1. [Controllers](docs/controllers.md#gyro-aiming)
+- **Controller Test:** a 3D DualSense that mirrors your controller live, with buttons to try rumble, haptics, trigger effects and lights. [Controllers](docs/controllers.md#controller-test)
+- **Virtual controls:** floating or fixed sticks, three sizes and adjustable opacity, shown only when you don't have a controller. The touchscreen works as the DualSense touchpad. [Touch and virtual controls](docs/touch-and-virtual-controls.md)
+- **A connection that looks after itself:** Auto bitrate learns what works for each console on each network, Optimise connection suggests settings in one tap, optional network smoothing rides out Wi-Fi stutter, and the stream reconnects after drops and quick app switches. [Connection](docs/connection.md)
+- **Microphone:** game and party chat through the phone's mic, with a mute button on the stream. [Audio](docs/audio.md)
+- **Easy setup:** finds your PS5 automatically, links with PSN sign-in, wakes it from rest mode, and lets each console have its own settings. [Consoles and setup](docs/consoles-and-setup.md)
+- **Play away from home:** give a console a remote address and iPlay5 uses it when the console isn't on your local network. No PSN internet play needed, but your router has to forward the Remote Play ports. [Consoles and setup](docs/consoles-and-setup.md#playing-away-from-home)
+- **Made for the iPhone Duo:** streams on the inner screen, set up on the outer one, and folding pauses the stream. [iPhone Duo](docs/iphone-duo.md)
+- **Handy extras:** type into PS5 text boxes with the iPhone keyboard, battery and temperature in the stream menu, and screenshots saved to Files. [The stream screen](docs/stream-screen.md)
 
 ## Install
 
@@ -59,7 +53,7 @@ https://raw.githubusercontent.com/reefbarman/iPlay5/main/altstore-source.json
 3. Your PS5 should appear under Console. If it doesn't, use **Enter IP address manually**.
 4. Tap **Sign in with PlayStation** to fill in your account ID. If your passkey or password manager doesn't work in the sign-in window, use the **Safari** option and paste the URL you end up on.
 5. On the PS5, open **Settings › System › Remote Play › Link Device**, enter the PIN in the app and tap **Link**.
-6. Tap **Play**. If you don't have a controller connected, choose **Use virtual controls**, **Connect without controls**, or **Cancel**. Tap the upper half of the screen to click the PS5 touchpad, or slide your finger to swipe, with or without virtual controls. With virtual controls showing, start a stick in the open space on either side of the lower half.
+6. Tap **Play**. If you don't have a controller connected, choose **Use virtual controls**, **Connect without controls**, or **Cancel**. Tap the picture to click the PS5 touchpad, or slide your finger to swipe. With virtual controls showing, the touchpad is the upper half, and you start a stick in the open space on either side of the lower half.
 
 While streaming: tap the top-right corner, then the gear, to open settings. Or hold **Select + Start** for a second. Tap the top-left corner, then the PlayStation logo, to press the PS button.
 
@@ -67,13 +61,13 @@ Start at 1080p60 with H.265. HDR needs H.265 and HDR enabled on the PS5. For the
 
 ## Controls guide
 
-Open **Controls Guide** from the Controller section in Settings or in the in-stream menu. The dashed line in the diagram marks the upper-screen touchpad; the dashed circles show example stick positions, not fixed touch targets. The PS and Settings buttons are shown after a corner tap. Capture only appears if enabled.
+Open **Controls Guide** from Settings › Controller or the in-stream menu. The dashed line in the diagram marks the upper-screen touchpad; the dashed circles show example stick positions, not fixed touch targets. The PS and Settings buttons are shown after a corner tap. Capture only appears if enabled. See [The stream screen](docs/stream-screen.md) for every shortcut and menu option.
 
 <p align="center"><img src="App/Resources/VirtualControlsGuide.png" width="640" alt="Compact iPhone and Duo controls: touchpad in the upper half, floating sticks below, fixed buttons on both sides, and stream shortcuts along the bottom"></p>
 
 ## Reporting a problem
 
-Right after the problem happens (without closing the app), open **Settings › Share diagnostics** and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). It has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. It's plain text, so you can check it before sending.
+Right after the problem happens (without closing the app), open **Settings › Share diagnostics** and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). It has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. It's plain text, so you can check it before sending. [Help and troubleshooting](docs/troubleshooting.md) has more tips, including the Controller Test and known limitations.
 
 ## Build from source
 

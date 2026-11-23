@@ -29,3 +29,9 @@ When creating a release:
 
 Write for players, not developers: describe behaviour, not internals. Leave out `docs:` and `chore:` commits unless they affect users. Omit empty sections.
 
+4. Add the same New/Fixes/Notes entries to the top of `CHANGELOG.md` under `## vX.Y.Z (YYYY-MM-DD)`.
+
+## Documentation
+
+`README.md` has the highlights. `docs/` has a guide per area (see `docs/README.md`) that describes every feature and setting. When a change adds or changes something players can see, update the matching guide in the same change, and the README highlights if it's a headline feature. Use the names, defaults and settings paths the app shows.
+
