@@ -26,7 +26,8 @@ func dump(_ node: SCNNode, depth: Int = 0) {
 }
 dump(controller.scene.rootNode)
 
-controller.scene.background.contents = NSColor(white: 0.93, alpha: 1)
+// Like the app in dark mode
+controller.scene.background.contents = NSColor(white: 0, alpha: 1)
 let renderer = SCNRenderer(device: MTLCreateSystemDefaultDevice(), options: nil)
 renderer.scene = controller.scene
 renderer.pointOfView = controller.cameraNode
@@ -44,7 +45,7 @@ var rest = ControllerScene.State()
 save("rest", rest)
 
 var pressed = ControllerScene.State()
-pressed.pressed = [.cross, .up, .l1, .ps, .touchpad, .r3]
+pressed.pressed = [.cross, .up, .l1, .r1, .ps, .touchpad, .r3]
 pressed.leftStick = SIMD2(0.8, -0.6)
 pressed.l2 = 1
 pressed.lightbar = CGColor(srgbRed: 0.2, green: 0.4, blue: 1, alpha: 1)

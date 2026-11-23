@@ -52,6 +52,9 @@ final class ControllerTester {
 	/// rad/s and g, in DualSense axes
 	private(set) var gyro = SIMD3<Float>.zero
 	private(set) var accel = SIMD3<Float>.zero
+	/// Set when the accelerometer turned out to use different axes from the gyro: which accelerometer
+	/// axes line up with the gyro's x, y and z
+	private(set) var gravityAxes: String?
 	/// How the controller has turned since it was levelled, in the 3D model's axes
 	/// (x right, y towards the triggers, z out of the face)
 	private(set) var orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
@@ -79,8 +82,12 @@ final class ControllerTester {
 	///   front over a few seconds rather than building up.
 	/// - The gyro's small reading at rest is measured while the controller sits still and taken off.
 	/// - Front-on is the natural hold (`naturalUp`), whichever way the controller faced at the start.
+	/// - Controllers don't all report gravity on the same axes as their gyro (and a mismatch stops
+	///   gravity levelling anything), so it works out which axes match from how the controller turns.
 	private struct Motion {
 		var naturalUp: SIMD3<Float>
+		/// Index into `axisTurns` that puts the accelerometer into the gyro's axes
+		var axes = Motion.identityAxes
 		var gyro = SIMD3<Float>.zero
 		var accel = SIMD3<Float>(0, 1, 0)
 		/// Controller to world; the world is how the controller sat at the first sample
@@ -100,18 +107,56 @@ final class ControllerTester {
 		var lastTimestamp: UInt32?
 		var scheduled = false
 
-		mutating func add(gyro: SIMD3<Float>, accel: SIMD3<Float>, timestamp: UInt32) {
+		// Matching the accelerometer's axes to the gyro's: where gravity should be by now, for
+		// each way the axes could line up, turned along with the gyro and checked every quarter second
+		var predicted: [SIMD3<Float>]?
+		var windowLeft: Float = 0.25
+		var turnedInWindow: Float = 0
+		var mismatch = [Float](repeating: 0, count: Motion.axisTurns.count)
+		var checks = 0
+
+		/// The 24 ways to line up three axes (each axis swapped with another and/or flipped, without mirroring)
+		static let axisTurns: [simd_float3x3] = {
+			var turns: [simd_float3x3] = []
+			for p in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+				for signs in [[1, 1, 1], [1, 1, -1], [1, -1, 1], [1, -1, -1], [-1, 1, 1], [-1, 1, -1], [-1, -1, 1], [-1, -1, -1]] {
+					var m = simd_float3x3(0)
+					// Output axis i is input axis p[i], times signs[i] (columns are inputs)
+					for i in 0..<3 { m[p[i]][i] = Float(signs[i]) }
+					if simd_determinant(m) > 0 { turns.append(m) }
+				}
+			}
+			return turns
+		}()
+		static let identityAxes = axisTurns.firstIndex(of: matrix_identity_float3x3) ?? 0
+
+		/// How the axes are matched up, for showing: where the gyro's x, y and z come from
+		var axesDescription: String? {
+			guard axes != Self.identityAxes else { return nil }
+			let m = Self.axisTurns[axes]
+			return (0..<3).map { i in
+				let from = (0..<3).first { m[$0][i] != 0 } ?? i
+				return (m[from][i] < 0 ? "−" : "+") + ["X", "Y", "Z"][from]
+			}.joined(separator: " ")
+		}
+
+		mutating func add(gyro: SIMD3<Float>, accel rawAccel: SIMD3<Float>, timestamp: UInt32) {
 			self.gyro = gyro
-			self.accel = accel
+			self.accel = rawAccel
 			defer { lastTimestamp = timestamp }
+			let accel = Self.axisTurns[axes] * rawAccel
 			let g = simd_length(accel)
 			if up == nil {
 				guard g > 0.5 else { return }
 				up = accel / g
 			}
-			guard let last = lastTimestamp, let up else { return }
+			guard let last = lastTimestamp, up != nil else { return }
 			let dt = min(0.05, Float(timestamp &- last) / 1_000_000)
 			guard dt > 0 else { return }
+			let axesBefore = axes
+			matchAxes(rawAccel, rate: gyro - bias, dt: dt)
+			// Just rematched: carry on in the new axes from the next reading
+			guard axes == axesBefore, let up else { return }
 
 			let k = min(1, dt / 0.2)
 			if let mean = gyroMean {
@@ -154,6 +199,48 @@ final class ControllerTester {
 					attitude = simd_normalize(simd_quatf(angle: -turned * min(1, dt / 3), axis: up) * attitude)
 				}
 			}
+		}
+
+		/// Turns each candidate gravity with the gyro, and every quarter second scores how far
+		/// each ended up from what the accelerometer then reads. The right axes stay close.
+		mutating func matchAxes(_ rawAccel: SIMD3<Float>, rate w: SIMD3<Float>, dt: Float) {
+			let g = simd_length(rawAccel)
+			// Swinging it about adds acceleration that isn't gravity: start the window again
+			guard g > 0.75 && g < 1.25 else {
+				predicted = nil
+				return
+			}
+			let measured = Self.axisTurns.map { simd_normalize($0 * rawAccel) }
+			guard var p = predicted else {
+				predicted = measured
+				windowLeft = 0.25
+				turnedInWindow = 0
+				return
+			}
+			for i in p.indices { p[i] = simd_normalize(p[i] + simd_cross(p[i], w) * dt) }
+			predicted = p
+			turnedInWindow += simd_length(w) * dt
+			windowLeft -= dt
+			guard windowLeft <= 0 else { return }
+			// Only turning tells the candidates apart
+			if turnedInWindow > 0.25 {
+				for i in mismatch.indices {
+					mismatch[i] = mismatch[i] * 0.85 + simd_length_squared(measured[i] - p[i])
+				}
+				checks += 1
+				let best = mismatch.indices.min { mismatch[$0] < mismatch[$1] } ?? axes
+				if checks >= 4, best != axes, mismatch[best] < 0.35 * mismatch[axes] {
+					axes = best
+					// Start over in the new axes, front-on at the natural hold
+					let a = Self.axisTurns[axes] * rawAccel
+					attitude = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+					up = simd_normalize(a)
+					setLevel(natural: naturalUp)
+				}
+			}
+			predicted = measured
+			windowLeft = 0.25
+			turnedInWindow = 0
 		}
 
 		/// Front-on is the attitude now, tipped so that holding the controller with `natural`
@@ -258,10 +345,18 @@ final class ControllerTester {
 		motionSource = controller?.motion?.hasRotationRate == true ? "Controller gyro" : "Phone gyro"
 		rumbleOn = controller?.haptics?.supportedLocalities.isEmpty == false ? "Controller" : "Phone"
 		touches = [nil, nil]
-		// A different controller (or the phone) starts over, level with however it's held
-		motion.withLock { $0 = Motion(naturalUp: $0.naturalUp) }
+		// A different controller (or the phone) starts over, level with however it's held,
+		// with the axes matched last time
+		let axes = UserDefaults.standard.object(forKey: axesKey) as? Int
+		motion.withLock { m in
+			m = Motion(naturalUp: m.naturalUp)
+			if let axes, Motion.axisTurns.indices.contains(axes) { m.axes = axes }
+		}
+		gravityAxes = nil
 		orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 	}
+
+	private var axesKey: String { "ControllerTest.gravityAxes.\(controllerName ?? "Phone")" }
 
 	// MARK: - Motion
 
@@ -273,6 +368,11 @@ final class ControllerTester {
 		gyro = m.gyro
 		accel = m.accel
 		orientation = m.shown
+		let description = m.axesDescription
+		if description != gravityAxes {
+			gravityAxes = description
+			UserDefaults.standard.set(m.axes, forKey: axesKey)
+		}
 	}
 
 	/// Shows the way the controller is held now front-on, and remembers it as the natural hold
@@ -513,6 +613,9 @@ struct ControllerTestView: View {
 				Text("Motion: \(tester.motionSource)")
 			} footer: {
 				Text("Held still and flat, the gyro should read near zero and Accel Y about +1 g.")
+				if let axes = tester.gravityAxes {
+					Text("This controller reports gravity on different axes from its gyro. Matched up by how it turns: \(axes).")
+				}
 			}
 
 			Section {

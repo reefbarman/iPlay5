@@ -83,6 +83,10 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	private var fingers: [SCNNode] = []
 	private var playerLights: [SCNNode] = []
 	private var ripples: [SCNNode] = []
+	/// Glows behind L1, R1, L2 and R2, which hide behind the controller when it faces you
+	private var halos: [SCNNode] = []
+	/// Glows on the touchpad where it's clicked
+	private var clickSpots: [SCNNode] = []
 
 	// MARK: - Colours
 
@@ -264,6 +268,43 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			model.addChildNode(light)
 			playerLights.append(light)
 		}
+		for _ in 0..<2 {
+			let plane = SCNPlane(width: 0.3, height: 0.3)
+			let m = SCNMaterial()
+			m.lightingModel = .constant
+			// Laid over the white pad, where adding light would barely show: solid blue, faded out by the glow's alpha
+			m.diffuse.contents = Self.shellPressed
+			m.transparent.contents = Self.glowImage
+			m.transparencyMode = .aOne
+			m.blendMode = .alpha
+			m.writesToDepthBuffer = false
+			plane.materials = [m]
+			let spot = SCNNode(geometry: plane)
+			spot.renderingOrder = 10
+			spot.isHidden = true
+			model.addChildNode(spot)
+			clickSpots.append(spot)
+		}
+		// Behind and above each shoulder button and trigger, so the glow shows over the top edge
+		for (name, back, size) in [("LeftShoulder", Float(0.05), CGFloat(0.75)), ("RightShoulder", 0.05, 0.75),
+								   ("Shoulder_Left_Trigger", 0.2, 0.9), ("Shoulder_Right_Trigger", 0.2, 0.9)] {
+			let plane = SCNPlane(width: size, height: size)
+			let m = SCNMaterial()
+			m.lightingModel = .constant
+			m.diffuse.contents = Self.glowImage
+			m.multiply.contents = Self.shellPressed
+			m.blendMode = .add
+			m.writesToDepthBuffer = false
+			m.isDoubleSided = true
+			plane.materials = [m]
+			let halo = SCNNode(geometry: plane)
+			halo.simdPosition = (node(name)?.simdPosition ?? .zero) + SIMD3(0, 0.06, -back)
+			halo.constraints = [SCNBillboardConstraint()]
+			halo.renderingOrder = 10
+			halo.opacity = 0
+			model.addChildNode(halo)
+			halos.append(halo)
+		}
 		for x: Float in [-0.62, 0.62] {
 			for _ in 0..<2 {
 				let ring = SCNNode(geometry: SCNTorus(ringRadius: 0.1, pipeRadius: 0.006))
@@ -312,6 +353,20 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 
 	var cameraNode: SCNNode? { scene.rootNode.childNode(withName: "camera", recursively: false) }
 
+	/// A soft round glow, fading to nothing at the edge (black as well as clear, for adding)
+	private static let glowImage: CGImage? = {
+		let size = 128
+		guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+			space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+			let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+				colors: [CGColor(gray: 1, alpha: 1), CGColor(gray: 1, alpha: 0.35), CGColor(gray: 0, alpha: 0)] as CFArray,
+				locations: [0, 0.35, 1])
+		else { return nil }
+		let c = CGPoint(x: size / 2, y: size / 2)
+		ctx.drawRadialGradient(gradient, startCenter: c, startRadius: 0, endCenter: c, endRadius: CGFloat(size) / 2, options: [])
+		return ctx.makeImage()
+	}()
+
 	/// A soft studio for reflections: bright overhead, a couple of softboxes, dark floor
 	private static func studio() -> CGImage? {
 		let w = 512
@@ -346,7 +401,8 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			let on = s.pressed.contains(control)
 			let push: SIMD3<Float> = switch control {
 			case .l1, .r1: SIMD3(0, -0.014, 0)
-			case .touchpad: SIMD3(0, 0, -0.006)
+			// The touchpad was cut out of the shell: moving it opens gaps
+			case .touchpad: .zero
 			case .ps, .create, .options: SIMD3(0, 0, -0.008)
 			default: SIMD3(0, 0, -0.012)
 			}
@@ -354,10 +410,14 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 				n.simdTransform = on ? Self.translation(push) * rest : rest
 			}
 			switch control {
-			case .l1, .r1, .touchpad:
+			case .touchpad:
+				// Shown by glows where it's clicked (placeFingers): the pad was cut out of the shell
+				// with a ragged top edge, which tinting the whole pad shows up
+				break
+			case .l1, .r1:
 				// White parts turn blue: a glow on white hardly shows
 				for m in part.materials {
-					m.diffuse.contents = on ? (control == .touchpad ? Self.mix(Self.shell, Self.shellPressed, 0.55) : Self.shellPressed) : Self.shell
+					m.diffuse.contents = on ? Self.shellPressed : Self.shell
 					m.emission.contents = Self.shellPressed
 					m.emission.intensity = on ? 0.5 : 0
 				}
@@ -410,6 +470,31 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			}
 		}
 
+		// Glows behind the shoulders and triggers: pressed, pulled, or faintly in the trigger effect's colour
+		let effect = Self.effectColours[s.triggerLook]
+		for (i, halo) in halos.enumerated() {
+			let m = halo.geometry?.firstMaterial
+			let amount: Float
+			switch i {
+			case 0, 1:
+				amount = s.pressed.contains(i == 0 ? .l1 : .r1) ? 0.9 : 0
+				m?.multiply.contents = Self.shellPressed
+			default:
+				let pull = i == 2 ? s.l2 : s.r2
+				if pull > 0.02 {
+					amount = 0.3 + pull * 0.7
+					m?.multiply.contents = Self.shellPressed
+				} else if let effect {
+					amount = 0.3
+					m?.multiply.contents = effect
+				} else {
+					amount = 0
+				}
+			}
+			halo.opacity = CGFloat(amount)
+			halo.isHidden = amount == 0
+		}
+
 		// Lightbar
 		for m in lightbar {
 			if let colour = s.lightbar {
@@ -432,26 +517,43 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 		}
 		for (i, light) in playerLights.enumerated() { light.isHidden = !lit.contains(i) }
 
-		placeFingers(s.touches)
+		placeFingers(s.touches, clicked: s.pressed.contains(.touchpad))
 		shake(s.buzz, time: time)
 	}
 
-	private func placeFingers(_ touches: [Touch]) {
-		guard let pad = touchpadGeometry else { return }
+	/// The touchpad's surface at x, y (0...1 across and down), in the model's coordinates
+	private func padSurface(_ pad: SCNNode, x tx: Float, y ty: Float) -> SCNVector3 {
 		let (lo, hi) = pad.boundingBox
+		let x = Float(lo.x) + tx * Float(hi.x - lo.x)
+		let y = Float(hi.y) - ty * Float(hi.y - lo.y)
+		let from = SCNVector3(x, y, Float(hi.z) + 1)
+		let to = SCNVector3(x, y, Float(lo.z) - 1)
+		let surface = pad.hitTestWithSegment(from: from, to: to, options: nil).first?.localCoordinates
+			?? SCNVector3(x, y, Float(hi.z))
+		return model.convertPosition(surface, from: pad)
+	}
+
+	private func placeFingers(_ touches: [Touch], clicked: Bool) {
+		guard let pad = touchpadGeometry else { return }
+		// Clicked: glow under each finger, or the middle when there are none
+		let spots = !clicked ? [] : touches.isEmpty ? [(Float(0.5), Float(0.5))] : touches.map { ($0.x, $0.y) }
+		for (i, spot) in clickSpots.enumerated() {
+			guard i < spots.count else {
+				spot.isHidden = true
+				continue
+			}
+			var p = padSurface(pad, x: spots[i].0, y: spots[i].1)
+			p.z += 0.004
+			spot.position = p
+			spot.isHidden = false
+		}
 		for (i, dot) in fingers.enumerated() {
 			guard i < touches.count else {
 				dot.isHidden = true
 				continue
 			}
 			let t = touches[i]
-			let x = Float(lo.x) + t.x * Float(hi.x - lo.x)
-			let y = Float(hi.y) - t.y * Float(hi.y - lo.y)
-			let from = SCNVector3(x, y, Float(hi.z) + 1)
-			let to = SCNVector3(x, y, Float(lo.z) - 1)
-			let surface = pad.hitTestWithSegment(from: from, to: to, options: nil).first?.localCoordinates
-				?? SCNVector3(x, y, Float(hi.z))
-			dot.position = model.convertPosition(surface, from: pad)
+			dot.position = padSurface(pad, x: t.x, y: t.y)
 			dot.isHidden = false
 			let colour = t.fromScreen ? Self.rgb(0.2, 0.85, 1) : Self.rgb(1, 0.6, 0.15)
 			if let m = dot.geometry?.firstMaterial {

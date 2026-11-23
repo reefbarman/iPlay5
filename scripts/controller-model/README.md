@@ -17,8 +17,9 @@ The export puts +X to the right, +Y towards the triggers and +Z out of the face,
 ## Previewing on the Mac
 
 ```sh
-swiftc -O App/Views/ControllerScene.swift scripts/controller-model/preview/main.swift -o /tmp/controller-preview
-/tmp/controller-preview App/Resources/DualSense.usdz /tmp/controller-preview-out
+mkdir -p build/preview-bin
+swiftc -O App/Views/ControllerScene.swift scripts/controller-model/preview/main.swift -o build/preview-bin/controller-preview
+build/preview-bin/controller-preview App/Resources/DualSense.usdz build/preview-out
 ```
 
-This writes rest, pressed and turned PNGs.
+This writes rest, pressed and turned PNGs on a black background, like the app in dark mode. It needs the GPU, so it renders nothing inside an agent sandbox.
