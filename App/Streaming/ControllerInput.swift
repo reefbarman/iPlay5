@@ -53,6 +53,8 @@ final class ControllerInput {
 
 	private(set) var controllerName: String?
 	private var controller: GCController?
+	/// The controller being read, if any
+	var activeController: GCController? { controller }
 	private let motionManager = CMMotionManager()
 	private let motionQueue = OperationQueue()
 	private var observers: [NSObjectProtocol] = []
