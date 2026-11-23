@@ -29,6 +29,20 @@ extern "C"
     /// Optional global log sink for discovery/registration (sessions take their own).
     void ck_set_log_callback(CKLogCallback cb, void *user);
 
+#ifdef CK_INPUT_LATENCY_PROBE
+    // Available only in the isolated device probe. Times are Mach absolute ticks.
+    uint64_t ck_latency_ticks(void);
+    double ck_latency_seconds(uint64_t ticks);
+    uint64_t ck_latency_begin(double age_seconds, uint64_t entry_ticks, bool pressed);
+    void ck_latency_exit(uint64_t id);
+    void ck_latency_arm(uint64_t id);
+    void ck_latency_disarm(void);
+    void ck_latency_invalid(void);
+    void ck_latency_masked(void);
+    void ck_latency_reset(void);
+    void ck_latency_report(void);
+#endif
+
     // ----------------------------------------------------------------- codecs
 
     typedef enum

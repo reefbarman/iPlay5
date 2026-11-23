@@ -85,6 +85,8 @@ open iPlay5.xcodeproj                                   # run on your phone
 
 To build the same unsigned IPA the releases use, run `scripts/package-ipa.sh`, which writes `build/iPlay5.ipa`. To publish a release, push a `v*` tag. The release workflow builds the IPA, attaches it to a GitHub release and adds it to `altstore-source.json`.
 
+For developer measurements of physical button latency, use the [isolated iPhone probe](scripts/input-latency.md). Normal builds do not collect these timings.
+
 ### Layout
 
 | Path             | What                                                                                                                |

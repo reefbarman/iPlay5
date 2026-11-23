@@ -308,9 +308,27 @@ final class StreamSession {
 		input.gyroAimEnabled = settings.gyroAim != .off
 		input.feedback.rumbleEnabled = settings.rumble
 		input.feedback.phoneHapticsScale = settings.phoneHaptics.scale
+		#if DEBUG && INPUT_LATENCY_PROBE
+		input.canMeasureCross = { [weak self] in
+			guard let self, self.state == .streaming, !self.backgrounded else { return false }
+			if self.virtualPad.buttons & CK_BUTTON_CROSS.rawValue != 0 {
+				ck_latency_masked(); return false
+			}
+			return true
+		}
+		#endif
 		input.onPad = { [weak self] pad in
-			self?.physicalPad = pad
-			self?.sendPad()
+			guard let self else { return }
+			#if DEBUG && INPUT_LATENCY_PROBE
+			if let sample = self.input.crossSample,
+				(self.physicalPad.buttons ^ pad.buttons) & CK_BUTTON_CROSS.rawValue != 0,
+				((pad.buttons & CK_BUTTON_CROSS.rawValue) != 0) == sample.pressed {
+				ck_latency_arm(sample.id)
+			}
+			defer { ck_latency_disarm() }
+			#endif
+			self.physicalPad = pad
+			self.sendPad()
 		}
 		input.onMotion = { [weak self] gyro, accel, ts in
 			guard let handle = self?.handle else { return }
@@ -363,6 +381,9 @@ final class StreamSession {
 	/// If it runs out we disconnect cleanly (so the console lets go of us) and reconnect on return.
 	private func enterBackground() {
 		backgrounded = true
+		#if DEBUG && INPUT_LATENCY_PROBE
+		ck_latency_reset()
+		#endif
 		releaseInput()
 		guard handle != nil, backgroundTask == .invalid else { return }
 		backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep the stream connected") { [weak self] in
@@ -667,6 +688,10 @@ final class StreamSession {
 		statsTimer = nil
 		// A new connection starts fresh counters, so a check in progress can't carry on
 		connectionCheck = nil
+		#if DEBUG && INPUT_LATENCY_PROBE
+		// Stop sampling, but let already-submitted edges finish until Chiaki joins its sender.
+		input.canMeasureCross = nil
+		#endif
 		input.stop()
 		physicalPad = CKPadState()
 		gyroStickPosition = .zero
@@ -679,6 +704,9 @@ final class StreamSession {
 		if let handle {
 			// Stops and joins chiaki's threads: no callbacks after this
 			ck_session_destroy(handle)
+			#if DEBUG && INPUT_LATENCY_PROBE
+			ck_latency_report()
+			#endif
 		}
 		handle = nil
 		decoder?.invalidate()

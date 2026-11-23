@@ -1,0 +1,168 @@
+--- a/include/chiaki/feedback.h
++++ b/include/chiaki/feedback.h
+@@ -98,6 +98,11 @@
+ CHIAKI_EXPORT bool chiaki_feedback_history_buffer_record_state(ChiakiFeedbackHistoryBuffer *feedback_history_buffer, ChiakiLog *log,
+ 		const ChiakiControllerState *state_prev, const ChiakiControllerState *state_now,
+ 		ChiakiFeedbackHistoryEventPushedCallback event_pushed, void *event_pushed_user);
+ 
++#ifdef CK_INPUT_LATENCY_PROBE
++/* Consume the Cross marker from the synchronous event-pushed callback. */
++bool chiaki_feedback_history_take_cross_edge(const ChiakiFeedbackHistoryBuffer *buffer, bool *pressed);
++#endif
++
+ #ifdef __cplusplus
+ }
+--- a/src/feedback.c
++++ b/src/feedback.c
+@@ -207,6 +207,20 @@
+ 	feedback_history_buffer->events[feedback_history_buffer->begin] = *event;
+ }
+ 
++#ifdef CK_INPUT_LATENCY_PROBE
++static _Thread_local const ChiakiFeedbackHistoryBuffer *history_cross_buffer;
++static _Thread_local bool history_cross_pressed;
++
++bool chiaki_feedback_history_take_cross_edge(const ChiakiFeedbackHistoryBuffer *buffer, bool *pressed)
++{
++	if(history_cross_buffer != buffer)
++		return false;
++	*pressed = history_cross_pressed;
++	history_cross_buffer = NULL;
++	return true;
++}
++#endif
++
+ typedef struct history_recorder_t
+ {
+ 	ChiakiFeedbackHistoryBuffer *buffer;
+@@ -240,6 +254,16 @@
+ 			CHIAKI_LOGE(recorder->log, "Feedback Sender failed to format button history event for button id %llu", (unsigned long long)button_id);
+ 			continue;
+ 		}
++#ifdef CK_INPUT_LATENCY_PROBE
++		if(button_id == CHIAKI_CONTROLLER_BUTTON_CROSS)
++		{
++			history_cross_buffer = recorder->buffer;
++			history_cross_pressed = now;
++			history_recorder_push(recorder, &event);
++			history_cross_buffer = NULL;
++			continue;
++		}
++#endif
+ 		history_recorder_push(recorder, &event);
+ 	}
+ }
+--- a/src/feedbacksender.c
++++ b/src/feedbacksender.c
+@@ -3,6 +3,10 @@
+ #include <chiaki/feedbacksender.h>
+ #include <chiaki/time.h>
+ 
++#ifdef CK_INPUT_LATENCY_PROBE
++#include "ck_latency_internal.h"
++#endif
++
+ #include <string.h>
+ 
+ #define FEEDBACK_STATE_TIMEOUT_MIN_MS 8 // minimum time to wait between sending 2 packets
+@@ -67,6 +71,9 @@
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto error_mutex;
+ 
++#ifdef CK_INPUT_LATENCY_PROBE
++	ck_latency_sender_reset(feedback_sender);
++#endif
+ 	err = chiaki_thread_create(&feedback_sender->thread, feedback_sender_thread_func, feedback_sender);
+ 	if(err != CHIAKI_ERR_SUCCESS)
+ 		goto error_cond;
+@@ -90,6 +97,9 @@
+ 	chiaki_mutex_unlock(&feedback_sender->state_mutex);
+ 	chiaki_cond_signal(&feedback_sender->state_cond);
+ 	chiaki_thread_join(&feedback_sender->thread, NULL);
++#ifdef CK_INPUT_LATENCY_PROBE
++	ck_latency_sender_reset(feedback_sender);
++#endif
+ 	chiaki_cond_fini(&feedback_sender->state_cond);
+ 	chiaki_mutex_fini(&feedback_sender->state_mutex);
+ 	chiaki_feedback_history_buffer_fini(&feedback_sender->history_buf);
+@@ -224,6 +234,11 @@
+ {
+ 	ChiakiFeedbackSender *feedback_sender = user;
+ 	feedback_sender->history_seq_num++;
++#ifdef CK_INPUT_LATENCY_PROBE
++	bool pressed;
++	if(chiaki_feedback_history_take_cross_edge(&feedback_sender->history_buf, &pressed))
++		ck_latency_history_edge(feedback_sender, (ChiakiSeqNum16)(feedback_sender->history_seq_num - 1), pressed);
++#endif
+ 	feedback_sender->history_dirty = true;
+ 	feedback_sender_flush_history_locked(feedback_sender);
+ }
+@@ -284,6 +299,9 @@
+ 		bool send_feedback_state = now_ms - last_feedback_state_ms >= FEEDBACK_STATE_TIMEOUT_MAX_MS;
+ 		ChiakiControllerState state_now = feedback_sender->controller_state;
+ 		bool send_feedback_history = false;
++#ifdef CK_INPUT_LATENCY_PROBE
++		bool history_tail = false;
++#endif
+ 		uint8_t history_buf[CHIAKI_FEEDBACK_HISTORY_PACKET_BUF_SIZE];
+ 		size_t history_buf_size = 0;
+ 		uint8_t history_event_count = 0;
+@@ -330,6 +348,9 @@
+ 			memcpy(history_buf, feedback_sender->history_last_packet, history_buf_size);
+ 			feedback_sender->history_tail_resends++;
+ 			send_feedback_history = true;
++#ifdef CK_INPUT_LATENCY_PROBE
++			history_tail = true;
++#endif
+ 		}
+ 		chiaki_mutex_unlock(&feedback_sender->state_mutex);
+ 
+@@ -337,7 +358,15 @@
+ 			feedback_sender_send_state(feedback_sender, &state_now);
+ 
+ 		if(send_feedback_history)
++		{
++#ifdef CK_INPUT_LATENCY_PROBE
++			ck_latency_packet_begin(feedback_sender, history_packet_seq_num, history_event_count, history_tail);
++#endif
+ 			feedback_sender_send_history_packet(feedback_sender, history_packet_seq_num, history_event_count, history_buf, history_buf_size);
++#ifdef CK_INPUT_LATENCY_PROBE
++			ck_latency_packet_end();
++#endif
++		}
+ 
+ 		err = chiaki_mutex_lock(&feedback_sender->state_mutex);
+ 		if(err != CHIAKI_ERR_SUCCESS)
+--- a/src/takion.c
++++ b/src/takion.c
+@@ -7,6 +7,10 @@
+ #include <chiaki/gkcrypt.h>
+ #include <chiaki/time.h>
+ 
++#ifdef CK_INPUT_LATENCY_PROBE
++#include "ck_latency_internal.h"
++#endif
++
+ #include <fcntl.h>
+ #include <stdbool.h>
+ #include <stdio.h>
+@@ -554,6 +558,19 @@
+ CHIAKI_EXPORT ChiakiErrorCode chiaki_takion_send_raw(ChiakiTakion *takion, const uint8_t *buf, size_t buf_size)
+ {
+ 	int r = send(takion->sock, buf, buf_size, 0);
++#ifdef CK_INPUT_LATENCY_PROBE
++	if(buf_size && (buf[0] & TAKION_PACKET_BASE_TYPE_MASK) == TAKION_PACKET_TYPE_FEEDBACK_HISTORY)
++	{
++		if(r < 0)
++		{
++			int saved_errno = errno;
++			ck_latency_socket_result(false);
++			errno = saved_errno;
++		}
++		else
++			ck_latency_socket_result((size_t)r == buf_size);
++	}
++#endif
+ 	if(r < 0)
+ 	{
+ 		CHIAKI_LOGE(takion->log, "Takion failed to send raw: " CHIAKI_SOCKET_ERROR_FMT, CHIAKI_SOCKET_ERROR_VALUE);
