@@ -4,9 +4,8 @@
 #   scripts/build-chiaki.sh            # Release
 #   CONFIG=Debug scripts/build-chiaki.sh
 #   SLICES=ios scripts/build-chiaki.sh  # device only (release CI); no simulator support
-#   scripts/build-chiaki.sh --input-latency-probe  # isolated, optimised device slice
 #
-# Output: Frameworks/ChiakiKit.xcframework (under build/input-latency/ for the probe)
+# Output: Frameworks/ChiakiKit.xcframework
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -15,19 +14,6 @@ MIN_IOS="${MIN_IOS:-17.0}"
 SLICES="${SLICES:-ios sim}"
 BUILD="$ROOT/build/chiakikit"
 OUT="$ROOT/Frameworks/ChiakiKit.xcframework"
-PROBE=OFF
-
-case "${1:-}" in
-	--input-latency-probe)
-		PROBE=ON
-		CONFIG=Release
-		SLICES=ios
-		BUILD="$ROOT/build/input-latency/chiakikit"
-		OUT="$ROOT/build/input-latency/Frameworks/ChiakiKit.xcframework"
-		;;
-	"") ;;
-	*) echo "Unknown option '$1' (expected --input-latency-probe)" >&2; exit 1 ;;
-esac
 
 build_slice() {
 	local name="$1" sysroot="$2"
@@ -38,7 +24,6 @@ build_slice() {
 		-DCMAKE_OSX_ARCHITECTURES=arm64 \
 		-DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN_IOS" \
 		-DCMAKE_BUILD_TYPE="$CONFIG" \
-		-DCK_INPUT_LATENCY_PROBE="$PROBE" \
 		-DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
 	cmake --build "$dir"
 	# Merge every static lib into one archive

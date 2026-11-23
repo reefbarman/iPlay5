@@ -23,7 +23,6 @@
 #   0003-high-bitrate-buffers.patch raises the local SO_RCVBUF (falling back if the
 #   kernel refuses; the advertised a_rwnd is unchanged) and enlarges the video
 #   reorder queue so 100-200 Mbps streams don't overflow them.
-#   0004-input-latency-probe.patch is applied only for CK_INPUT_LATENCY_PROBE.
 #   Regenerate a patch against a pristine copy of vendor/chiaki-ng/lib with
 #   `diff -ruN a b` (paths a/src/..., applied with patch -p1).
 
@@ -33,7 +32,6 @@ project(ChiakiKit C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(BUILD_SHARED_LIBS OFF)
-option(CK_INPUT_LATENCY_PROBE "Build the local physical-controller input latency probe" OFF)
 
 get_filename_component(ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(CHIAKI_DIR "${ROOT}/vendor/chiaki-ng")
@@ -95,9 +93,6 @@ target_compile_options(jerasure PRIVATE -w)
 # ---------------------------------------------------------- patched chiaki lib
 set(CHIAKI_LIB "${CMAKE_BINARY_DIR}/chiaki-lib")
 file(GLOB CHIAKI_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/*.patch")
-if(NOT CK_INPUT_LATENCY_PROBE)
-	list(REMOVE_ITEM CHIAKI_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/patches/0004-input-latency-probe.patch")
-endif()
 list(SORT CHIAKI_PATCHES)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CHIAKI_PATCHES})
 file(REMOVE_RECURSE "${CHIAKI_LIB}")
@@ -132,12 +127,6 @@ add_library(chiaki STATIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/generated/takion.pb.c"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/remote_stubs.c"
 	"${CMAKE_CURRENT_SOURCE_DIR}/src/ck_bridge.c")
-
-if(CK_INPUT_LATENCY_PROBE)
-	target_sources(chiaki PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/ck_latency.c")
-	target_include_directories(chiaki PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-	target_compile_definitions(chiaki PRIVATE CK_INPUT_LATENCY_PROBE=1)
-endif()
 
 target_include_directories(chiaki
 	PUBLIC "${CHIAKI_LIB}/include" "${CMAKE_CURRENT_SOURCE_DIR}/include"

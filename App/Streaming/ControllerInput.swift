@@ -14,13 +14,6 @@ import UIKit
 final class ControllerInput {
 	/// Called on the main thread with the latest pad state.
 	var onPad: ((CKPadState) -> Void)?
-	#if DEBUG && INPUT_LATENCY_PROBE
-	// Only a streaming session installs this; never sample Controller Test.
-	var canMeasureCross: (() -> Bool)?
-	private(set) var crossSample: (id: UInt64, pressed: Bool)?
-	private var crossInput: (any GCPressedStateInput)?
-	private var crossStamp: TimeInterval = 0
-	#endif
 	/// gyro rad/s, accel g, DualSense axes, monotonic microseconds.
 	var onMotion: ((SIMD3<Float>, SIMD3<Float>, UInt32) -> Void)?
 	var onTouch: ((TouchEvent) -> Void)?
@@ -98,10 +91,6 @@ final class ControllerInput {
 	/// Lets go of the controller but remembers what the console last asked for,
 	/// so `start()` puts the lightbar, player lights and trigger effects back
 	func suspend() {
-		#if DEBUG && INPUT_LATENCY_PROBE
-		if canMeasureCross != nil { ck_latency_reset() }
-		crossInput = nil
-		#endif
 		observers.forEach(NotificationCenter.default.removeObserver)
 		observers.removeAll()
 		comboTimer?.invalidate()
@@ -144,13 +133,6 @@ final class ControllerInput {
 			updateMenuCombo(select: false, start: false)
 			releaseTouchpad()
 		}
-		#if DEBUG && INPUT_LATENCY_PROBE
-		if canMeasureCross != nil {
-			ck_latency_reset()
-			crossInput = next?.input.buttons[.a]?.pressedInput
-			crossStamp = crossInput?.lastPressedStateTimestamp ?? 0
-		}
-		#endif
 		controller = next
 		controllerName = next?.vendorName
 		feedback.attach(next)
@@ -163,18 +145,8 @@ final class ControllerInput {
 		log.notice("Using controller: \(next.vendorName ?? "?", privacy: .public) (\(next.productCategory, privacy: .public))")
 
 		claimSystemGestures(next)
-		pad.valueChangedHandler = { [weak self] pad, element in
-			#if DEBUG && INPUT_LATENCY_PROBE
-			let entry = ck_latency_ticks()
-			#endif
+		pad.valueChangedHandler = { [weak self] pad, _ in
 			guard let self, self.controller?.extendedGamepad === pad else { return }
-			#if DEBUG && INPUT_LATENCY_PROBE
-			self.crossSample = self.measureCross(pad, element: element, entry: entry)
-			defer {
-				if let sample = self.crossSample { ck_latency_exit(sample.id) }
-				self.crossSample = nil
-			}
-			#endif
 			self.padChanged(pad)
 		}
 
@@ -187,32 +159,6 @@ final class ControllerInput {
 		}
 		padChanged(pad)
 	}
-
-	#if DEBUG && INPUT_LATENCY_PROBE
-	private func measureCross(_ pad: GCExtendedGamepad, element: GCControllerElement, entry: UInt64) -> (UInt64, Bool)? {
-		guard let canMeasureCross else { return nil }
-		let pressed = pad.buttonA.isPressed
-		guard pressed != ((lastPad.buttons & CK_BUTTON_CROSS.rawValue) != 0) else { return nil }
-		guard element === pad.buttonA, let button = crossInput else { ck_latency_invalid(); return nil }
-		let stamp = button.lastPressedStateTimestamp
-		let before = ck_latency_ticks()
-		let age = button.lastPressedStateLatency
-		let after = ck_latency_ticks()
-		guard button.isPressed == pressed, stamp.isFinite, stamp > crossStamp,
-			button.lastPressedStateTimestamp == stamp, age.isFinite, age >= 0 else {
-			ck_latency_invalid(); return nil
-		}
-		crossStamp = stamp
-		guard canMeasureCross() else { return nil }
-		// The event timestamp has no documented Mach epoch. Translate only the age
-		// reading back to callback entry, using the midpoint around the getter.
-		let elapsed = ck_latency_seconds(before - entry + (after - before) / 2)
-		let ageAtEntry = age - elapsed
-		guard ageAtEntry >= 0 else { ck_latency_invalid(); return nil }
-		let id = ck_latency_begin(ageAtEntry, entry, pressed)
-		return id == 0 ? nil : (id, pressed)
-	}
-	#endif
 
 	private func claimSystemGestures(_ controller: GCController) {
 		for button in controller.physicalInputProfile.buttons.values {
