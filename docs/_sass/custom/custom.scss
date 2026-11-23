@@ -82,6 +82,22 @@
   }
 }
 
+.setup-panel {
+  margin: 1rem 0 2rem;
+  padding: 1.25rem 1.5rem;
+  border: 1px solid #2f5bea;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(47, 91, 234, 0.18), rgba(18, 26, 51, 0.6));
+
+  p {
+    margin-top: 0;
+  }
+}
+
+.setup-actions .btn {
+  margin: 0.25rem 0.5rem 0.25rem 0;
+}
+
 @media (max-width: 50rem) {
   .main-content .hero h1 {
     font-size: 1.9rem;

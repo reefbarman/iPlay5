@@ -54,6 +54,18 @@ title: PS5 Remote Play for iPhone and iPad
   </a>
 </div>
 
+## Recommended iPhone Duo setup
+
+<div class="setup-panel">
+  <p><strong>Controller: the <a href="https://www.gamesir.hk/">GameSir G8+</a> Bluetooth version</strong> clips onto the Duo well. Avoid the Apple-specific (USB-C) G8, because it doesn't work with the Duo. Pair the G8+ in its iOS mode (blue Home light), where it shows up as "DUOLSHOK 4 Wireless Controller", and iPlay5 uses its built-in gyro for motion controls and gyro aiming.</p>
+  <p><strong>Shim:</strong> the G8+'s grip can press the Duo's side button and trigger Siri mid-game. I made a free 3D-printable shim that stops it.</p>
+  <div class="setup-actions">
+    <a class="btn btn-primary" href="https://makerworld.com/en/models/3648382-iphone-duo-shim-for-gamesir-g8-no-siri-presses">Get the shim on MakerWorld</a>
+    <a class="btn" href="https://www.gamesir.hk/">GameSir G8+</a>
+    <a class="btn" href="{{ '/iphone-duo.html' | relative_url }}">iPhone Duo guide</a>
+  </div>
+</div>
+
 ## Install
 
 iPlay5 isn't on the App Store. You sideload it with your own Apple ID, and a free Apple ID is enough.
