@@ -1,6 +1,7 @@
 import ChiakiKit
 import GameController
 import os
+import simd
 import SwiftUI
 
 /// Reads the controller the same way a stream does, so what shows here is what
@@ -41,12 +42,6 @@ final class ControllerTester {
 		var shakeHz: Double
 	}
 
-	/// Controller tilt for the picture, in radians
-	struct Tilt: Equatable {
-		var pitch: Double = 0
-		var roll: Double = 0
-		var yaw: Double = 0
-	}
 
 	private(set) var pad = CKPadState()
 	private(set) var controllerName: String?
@@ -57,7 +52,9 @@ final class ControllerTester {
 	/// rad/s and g, in DualSense axes
 	private(set) var gyro = SIMD3<Float>.zero
 	private(set) var accel = SIMD3<Float>.zero
-	private(set) var tilt = Tilt()
+	/// How the controller has turned since it was levelled, in the 3D model's axes
+	/// (x right, y towards the triggers, z out of the face)
+	private(set) var orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 	/// The controller's own touchpad fingers, 0...1 across and down
 	private(set) var touches: [CGPoint?] = [nil, nil]
 	/// Fingers on the on-screen touch square, by slot, 0...1 across and down
@@ -66,26 +63,66 @@ final class ControllerTester {
 	private(set) var screenClick = false
 	private(set) var buzz: Buzz?
 	private(set) var triggerPreset = TriggerPreset.off
-	private(set) var lightbar: Color?
+	private(set) var lightbar: CGColor?
 	private(set) var player: Int?
 
 	var touchpadClicked: Bool { isPressed(CK_BUTTON_TOUCHPAD) || screenClick }
 
+	/// Attitude from the gyro, kept level by gravity (a Mahony filter), in DualSense axes:
+	/// x right, y out of the face, z towards the player
 	private struct Motion {
 		var gyro = SIMD3<Float>.zero
 		var accel = SIMD3<Float>(0, 1, 0)
-		var yaw: Float = 0
+		/// Controller to world; the world is how the controller sat at the first sample
+		var attitude = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+		/// Which way is up in that world
+		var up: SIMD3<Float>?
+		/// The attitude shown front-on
+		var level = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+		/// Seconds until the attitude now is taken as level, nil once done
+		var levelIn: Float? = 0.6
 		var lastTimestamp: UInt32?
 		var scheduled = false
+
+		mutating func add(gyro: SIMD3<Float>, accel: SIMD3<Float>, timestamp: UInt32) {
+			self.gyro = gyro
+			self.accel = accel
+			defer { lastTimestamp = timestamp }
+			let g = simd_length(accel)
+			if up == nil {
+				guard g > 0.5 else { return }
+				up = accel / g
+			}
+			guard let last = lastTimestamp, let up else { return }
+			let dt = min(0.05, Float(timestamp &- last) / 1_000_000)
+			guard dt > 0 else { return }
+			var w = gyro
+			// Nudge towards where gravity says up is, unless the controller is being swung about
+			if g > 0.8 && g < 1.2 {
+				w += 1.5 * simd_cross(accel / g, attitude.inverse.act(up))
+			}
+			let rate = simd_length(w)
+			if rate > 0 {
+				attitude = simd_normalize(attitude * simd_quatf(angle: rate * dt, axis: w / rate))
+			}
+			if let wait = levelIn {
+				levelIn = wait - dt > 0 ? wait - dt : nil
+				if levelIn == nil { level = attitude }
+			}
+		}
+
+		/// The turn since levelling, moved into the 3D model's axes
+		var shown: simd_quatf {
+			let q = level.inverse * attitude
+			// DualSense (x, y, z) is the model's (x, -z, y) turned: z towards the player is down the model
+			return simd_quatf(ix: q.imag.x, iy: -q.imag.z, iz: q.imag.y, r: q.real)
+		}
 	}
 
 	@ObservationIgnored private let input = ControllerInput()
 	/// Motion arrives faster than the screen updates: the latest values and turning,
 	/// updated on the motion thread and read once per hop to main
 	@ObservationIgnored private let motion = OSAllocatedUnfairLock(initialState: Motion())
-	/// Tilt from gravity, smoothed, before recentring
-	@ObservationIgnored private var rawTilt = Tilt()
-	@ObservationIgnored private var tiltOrigin = Tilt()
 	@ObservationIgnored private weak var lastController: GCController?
 	@ObservationIgnored private var running = false
 	@ObservationIgnored private var hapticsTimer: Timer?
@@ -116,15 +153,7 @@ final class ControllerTester {
 		input.onMotion = { [weak self] gyro, accel, timestamp in
 			guard let self else { return }
 			let schedule = self.motion.withLock { m in
-				// Turning left and right has no gravity to measure it against: add up the
-				// gyro and let it drift back to centre over a couple of seconds
-				if let last = m.lastTimestamp {
-					let dt = min(0.1, Float(timestamp &- last) / 1_000_000)
-					m.yaw = max(-1, min(1, (m.yaw + gyro.y * dt) * exp(-dt / 2)))
-				}
-				m.lastTimestamp = timestamp
-				m.gyro = gyro
-				m.accel = accel
+				m.add(gyro: gyro, accel: accel, timestamp: timestamp)
 				defer { m.scheduled = true }
 				return !m.scheduled
 			}
@@ -155,6 +184,9 @@ final class ControllerTester {
 		motionSource = controller?.motion?.hasRotationRate == true ? "Controller gyro" : "Phone gyro"
 		rumbleOn = controller?.haptics?.supportedLocalities.isEmpty == false ? "Controller" : "Phone"
 		touches = [nil, nil]
+		// A different controller (or the phone) starts over, level with however it's held
+		motion.withLock { $0 = Motion() }
+		orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 	}
 
 	// MARK: - Motion
@@ -166,20 +198,16 @@ final class ControllerTester {
 		}
 		gyro = m.gyro
 		accel = m.accel
-		// Tipping and tilting from gravity (the reaction to it points up, +y when flat)
-		let a = SIMD3<Double>(Double(m.accel.x), Double(m.accel.y), Double(m.accel.z))
-		let target = Tilt(pitch: atan2(-a.z, a.y), roll: atan2(-a.x, (a.y * a.y + a.z * a.z).squareRoot()), yaw: 0)
-		let k = 0.3
-		rawTilt.pitch += (target.pitch - rawTilt.pitch) * k
-		rawTilt.roll += (target.roll - rawTilt.roll) * k
-		tilt = Tilt(pitch: rawTilt.pitch - tiltOrigin.pitch, roll: rawTilt.roll - tiltOrigin.roll, yaw: Double(m.yaw))
+		orientation = m.shown
 	}
 
-	/// Treats the way the controller is held now as level
+	/// Shows the way the controller is held now front-on
 	func recentre() {
-		tiltOrigin = rawTilt
-		motion.withLock { $0.yaw = 0 }
-		tilt = Tilt()
+		motion.withLock { m in
+			m.level = m.attitude
+			m.levelIn = nil
+		}
+		orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 	}
 
 	// MARK: - Touch square
@@ -266,7 +294,8 @@ final class ControllerTester {
 	}
 
 	func setLightbar(red: UInt8, green: UInt8, blue: UInt8) {
-		lightbar = red == 0 && green == 0 && blue == 0 ? nil : Color(red: Double(red) / 255, green: Double(green) / 255, blue: Double(blue) / 255)
+		lightbar = red == 0 && green == 0 && blue == 0
+			? nil : CGColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
 		input.feedback.padInfo(CK_PAD_INFO_LIGHTBAR, red, green, blue)
 	}
 
@@ -309,21 +338,90 @@ struct ControllerTestView: View {
 		return points.map { "\(Int(($0.x * 1919).rounded())), \(Int(($0.y * 1079).rounded()))" }.joined(separator: "  ·  ")
 	}
 
+	private static let controls: [(CKButton, ControllerScene.Control)] = [
+		(CK_BUTTON_CROSS, .cross), (CK_BUTTON_MOON, .circle), (CK_BUTTON_BOX, .square), (CK_BUTTON_PYRAMID, .triangle),
+		(CK_BUTTON_DPAD_UP, .up), (CK_BUTTON_DPAD_DOWN, .down), (CK_BUTTON_DPAD_LEFT, .left), (CK_BUTTON_DPAD_RIGHT, .right),
+		(CK_BUTTON_L1, .l1), (CK_BUTTON_R1, .r1), (CK_BUTTON_L3, .l3), (CK_BUTTON_R3, .r3),
+		(CK_BUTTON_SHARE, .create), (CK_BUTTON_OPTIONS, .options), (CK_BUTTON_PS, .ps),
+	]
+
+	/// What the 3D controller shows
+	private var sceneState: ControllerScene.State {
+		var s = ControllerScene.State()
+		s.pressed = Set(Self.controls.filter { tester.isPressed($0.0) }.map(\.1))
+		if tester.touchpadClicked { s.pressed.insert(.touchpad) }
+		let pad = tester.pad
+		s.leftStick = SIMD2(Float(pad.left_x) / 32767, Float(pad.left_y) / 32767)
+		s.rightStick = SIMD2(Float(pad.right_x) / 32767, Float(pad.right_y) / 32767)
+		s.l2 = Float(pad.l2) / 255
+		s.r2 = Float(pad.r2) / 255
+		s.orientation = tester.orientation
+		s.touches = tester.touches.compactMap { $0 }.map { .init(x: Float($0.x), y: Float($0.y), fromScreen: false) }
+			+ tester.screenTouches.sorted { $0.key < $1.key }.map { .init(x: Float($0.value.x), y: Float($0.value.y), fromScreen: true) }
+		s.lightbar = tester.lightbar
+		s.player = tester.player
+		s.triggerLook = switch tester.triggerPreset {
+		case .off: .off
+		case .resistance: .resistance
+		case .weapon: .weapon
+		case .vibration: .vibration
+		}
+		s.buzz = tester.buzz.map { .init(left: $0.left, right: $0.right, hz: $0.shakeHz) }
+		return s
+	}
+
 	var body: some View {
+		GeometryReader { geo in
+			if geo.size.width > geo.size.height {
+				HStack(spacing: 0) {
+					live.frame(width: geo.size.width * 0.48)
+					form
+				}
+			} else {
+				VStack(spacing: 0) {
+					live.frame(height: min(geo.size.height * 0.55, geo.size.width / 1.5 + 120))
+					form
+				}
+			}
+		}
+		.background(Color(.systemGroupedBackground))
+		.navigationTitle("Controller Test")
+		.navigationBarTitleDisplayMode(.inline)
+		.onAppear {
+			onActiveChange?(true)
+			let orientation = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation
+			tester.start(selectIsTouchpad: store.settings.selectIsTouchpad, orientation: orientation)
+		}
+		.onDisappear {
+			tester.stop()
+			onActiveChange?(false)
+		}
+	}
+
+	/// The 3D controller and the touch square, kept on screen above (or beside) the list
+	private var live: some View {
+		VStack(spacing: 8) {
+			ControllerSceneView(state: sceneState)
+				.frame(maxWidth: .infinity, maxHeight: .infinity)
+				.overlay(alignment: .topTrailing) {
+					Button("Level", systemImage: "scope") { tester.recentre() }
+						.labelStyle(.iconOnly)
+						.font(.title3)
+						.padding(10)
+						.accessibilityLabel("Show the controller front-on as it's held now")
+				}
+			TouchSquare(
+				onTouch: { tester.screenTouch($0) },
+				onTap: { tester.screenTap(slot: $0) })
+				.frame(maxHeight: 100)
+				.padding(.horizontal, 16)
+				.padding(.bottom, 8)
+		}
+	}
+
+	private var form: some View {
 		Form {
 			Section {
-				ControllerRender(tester: tester)
-					.padding(.top, 8)
-					.overlay(alignment: .topTrailing) {
-						Button("Recentre", systemImage: "scope") { tester.recentre() }
-							.labelStyle(.iconOnly)
-							.buttonStyle(.borderless)
-							.padding(4)
-					}
-				TouchSquare(
-					onTouch: { tester.screenTouch($0) },
-					onTap: { tester.screenTap(slot: $0) })
-					.listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
 				LabeledContent("Pressed", value: pressedText)
 				LabeledContent("Touchpad", value: touchText)
 				LabeledContent("Left stick", value: Self.stick(tester.pad.left_x, tester.pad.left_y))
@@ -332,7 +430,7 @@ struct ControllerTestView: View {
 			} header: {
 				Text(tester.controllerName ?? "No controller")
 			} footer: {
-				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on. The square works like touching the stream: drag to move a finger on the touchpad, tap to click it. The controller tilts and turns with the gyro; tap the target to make the way you're holding it level.")
+				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on. The square under the controller works like touching the stream: drag to move a finger on the touchpad, tap to click it. The controller turns as you turn yours, starting front-on however you're holding it; tap the target to make the way you're holding it now front-on.")
 				if onActiveChange != nil {
 					Text("While this screen is open, the PS5 doesn't get anything from your controller, and the game's rumble and lights don't reach it.")
 				}
@@ -398,17 +496,6 @@ struct ControllerTestView: View {
 				Text(tester.hasLight ? "Leaving this screen puts the lights back how they were." : "This controller has no lightbar iOS can change.")
 			}
 		}
-		.navigationTitle("Controller Test")
-		.navigationBarTitleDisplayMode(.inline)
-		.onAppear {
-			onActiveChange?(true)
-			let orientation = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation
-			tester.start(selectIsTouchpad: store.settings.selectIsTouchpad, orientation: orientation)
-		}
-		.onDisappear {
-			tester.stop()
-			onActiveChange?(false)
-		}
 	}
 
 	private static func stick(_ x: Int16, _ y: Int16) -> String {
@@ -458,7 +545,7 @@ private struct TouchSquare: View {
 
 	var body: some View {
 		TouchSurface(onTouch: onTouch, onTap: onTap)
-			.aspectRatio(1920.0 / 1080.0, contentMode: .fit)
+			.aspectRatio(2, contentMode: .fit)
 			.background {
 				RoundedRectangle(cornerRadius: 14, style: .continuous)
 					.fill(Color(.tertiarySystemFill))
@@ -512,30 +599,6 @@ private struct TouchSurface: UIViewRepresentable {
 		}
 
 		private var tracked: [ObjectIdentifier: Tracked] = [:]
-		/// The form scrolls: hold it still while a finger is down so swipes stay on the square
-		private weak var scrollView: UIScrollView?
-		private var scrollViewDelayed = true
-
-		override func didMoveToWindow() {
-			super.didMoveToWindow()
-			if window != nil {
-				var view = superview
-				while let v = view, !(v is UIScrollView) { view = v.superview }
-				scrollView = view as? UIScrollView
-				if let scrollView {
-					// Touches reach the square straight away, before the form can start scrolling
-					scrollViewDelayed = scrollView.delaysContentTouches
-					scrollView.delaysContentTouches = false
-				}
-			} else {
-				scrollView?.delaysContentTouches = scrollViewDelayed
-				scrollView?.isScrollEnabled = true
-			}
-		}
-
-		private func holdScroll() {
-			scrollView?.isScrollEnabled = tracked.isEmpty
-		}
 
 		private func point(_ p: CGPoint) -> (UInt16, UInt16) {
 			guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
@@ -553,7 +616,6 @@ private struct TouchSurface: UIViewRepresentable {
 				let (x, y) = point(p)
 				onTouch?(.down(slot: slot, x: x, y: y))
 			}
-			holdScroll()
 		}
 
 		override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -589,7 +651,6 @@ private struct TouchSurface: UIViewRepresentable {
 					onTouch?(.up(slot: t.slot))
 				}
 			}
-			holdScroll()
 		}
 	}
 }
