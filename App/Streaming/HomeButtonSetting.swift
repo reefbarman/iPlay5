@@ -8,7 +8,11 @@ import UIKit
 /// as the PS button. The user can switch it to defer to the app, after which
 /// `ControllerInput.claimSystemGestures` gets the button. Earlier iOS versions
 /// have no such setting and already honour the claim.
+///
+/// The API only exists in the iOS 27 SDK (Xcode 27, Swift 6.4). Builds with an
+/// older SDK, like the release workflow's, leave it out and report it unsupported.
 enum HomeButtonSetting {
+#if compiler(>=6.4)
 	/// The setting exists on this iOS version
 	static var isSupported: Bool {
 		if #available(iOS 27, *) { true } else { false }
@@ -40,4 +44,9 @@ enum HomeButtonSetting {
 			}
 		}
 	}
+#else
+	static var isSupported: Bool { false }
+	@MainActor static var blocksApps: Bool { false }
+	@MainActor static func openSettings() {}
+#endif
 }
