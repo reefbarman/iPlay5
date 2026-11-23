@@ -388,7 +388,8 @@ struct StreamView: View {
 
 	/// On a foldable, streaming only happens on the inner screen: we wait for the
 	/// unfold before connecting, and pause if it's folded mid-session.
-	/// Normal iPhones are never "folded".
+	/// Normal iPhones are never "folded". iPhones play in landscape, while an
+	/// iPad plays in any window shape (portrait, Split View, Stage Manager).
 	private func updateFolded(_ size: CGSize) {
 		guard size.width > 0, size.height > 0 else { return }
 		AppDelegate.windowSizeChanged(size)
@@ -401,7 +402,7 @@ struct StreamView: View {
 		guard size.width > 0, size.height > 0 else { return }
 		let isFolded = DeviceLayout.isFolded(size) && !playHereAnyway
 		folded = isFolded
-		portrait = !isFolded && size.height > size.width
+		portrait = !isFolded && !DeviceLayout.isPad && size.height > size.width
 		let canPlay = !isFolded && !portrait
 		guard session != nil else {
 			if canPlay && !needsController && scenePhase == .active { startSession() }
@@ -469,22 +470,10 @@ struct StreamView: View {
 	}
 
 	private var settingsHint: some View {
-		HStack(alignment: .top) {
-			if !showPSButton {
-				HStack(spacing: 10) {
-					hintIcon("playstation.logo")
-					Image(systemName: "arrow.left")
-						.font(.title3.weight(.bold))
-					hintLabel("Tap this corner for the PS button")
-				}
-			}
-			Spacer(minLength: 16)
-			HStack(spacing: 10) {
-				hintLabel("Tap this corner for settings")
-				Image(systemName: "arrow.right")
-					.font(.title3.weight(.bold))
-				hintIcon("gearshape.fill")
-			}
+		// Smaller iPhones don't have room for the full wording on both sides
+		ViewThatFits(in: .horizontal) {
+			settingsHintRow(ps: "Tap this corner for the PS button", settings: "Tap this corner for settings")
+			settingsHintRow(ps: "PS button", settings: "Settings")
 		}
 		.foregroundStyle(.white)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -492,6 +481,26 @@ struct StreamView: View {
 		.padding(.horizontal, 20)
 		.ignoresSafeArea()
 		.allowsHitTesting(false)
+	}
+
+	private func settingsHintRow(ps: String, settings: String) -> some View {
+		HStack(alignment: .top) {
+			if !showPSButton {
+				HStack(spacing: 10) {
+					hintIcon("playstation.logo")
+					Image(systemName: "arrow.left")
+						.font(.title3.weight(.bold))
+					hintLabel(ps)
+				}
+			}
+			Spacer(minLength: 16)
+			HStack(spacing: 10) {
+				hintLabel(settings)
+				Image(systemName: "arrow.right")
+					.font(.title3.weight(.bold))
+				hintIcon("gearshape.fill")
+			}
+		}
 	}
 
 	// MARK: - Frame generation toggle (bottom right)
@@ -640,13 +649,14 @@ struct StreamView: View {
 	private var heatWarning: some View {
 		HStack(spacing: 8) {
 			Image(systemName: "thermometer.high")
-			Text("Your phone is getting hot. Switching to 30 fps in settings will help it cool down.")
+			Text("Your \(DeviceLayout.deviceNoun) is getting hot. Switching to 30 fps in settings will help it cool down.")
 		}
 		.font(.subheadline.weight(.semibold))
 		.foregroundStyle(.white)
 		.padding(.horizontal, 14)
 		.padding(.vertical, 8)
 		.background(.black.opacity(0.7), in: Capsule())
+		.padding(.horizontal, 20)
 		.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 		.padding(.bottom, 16)
 		.allowsHitTesting(false)
@@ -974,7 +984,7 @@ struct StreamView: View {
 						Button("Switch to 30 fps to cool down") { settings.wrappedValue.fps = 30 }
 					}
 				} header: {
-					Text("Phone")
+					Text(DeviceLayout.isPad ? "iPad" : "Phone")
 				}
 				Section {
 					if session?.connectionCheck != nil {
@@ -1016,7 +1026,7 @@ struct StreamView: View {
 					}
 					.disabled(!canCaptureStream || isSavingScreenshot)
 				} footer: {
-					Text("Screenshot mode keeps virtual controls and shortcuts visible while you frame the shot. Save screenshot saves a PNG to Files › On My iPhone › iPlay5, then returns the controls to normal.")
+					Text("Screenshot mode keeps virtual controls and shortcuts visible while you frame the shot. Save screenshot saves a PNG to \(DeviceLayout.filesLocation), then returns the controls to normal.")
 				}
 			}
 			.navigationTitle(console.name)
@@ -1035,7 +1045,7 @@ struct StreamView: View {
 			}
 			let filename = try await MarketingScreenshot.save(renderer: renderer)
 			guard !Task.isCancelled else { return }
-			screenshotMessage = "Saved \(filename) to Files › On My iPhone › iPlay5."
+			screenshotMessage = "Saved \(filename) to \(DeviceLayout.filesLocation)."
 		} catch {
 			guard !Task.isCancelled else { return }
 			screenshotMessage = "Couldn't save the screenshot. \(error.localizedDescription)"
@@ -1273,7 +1283,7 @@ private struct KeyboardOverlay: View {
 
 	var body: some View {
 		VStack(spacing: 12) {
-			Text("Type on your phone").font(.headline)
+			Text("Type on your \(DeviceLayout.deviceNoun)").font(.headline)
 			TextField("Text", text: $text)
 				.textFieldStyle(.roundedBorder)
 				.textInputAutocapitalization(.never)

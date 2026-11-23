@@ -1,6 +1,6 @@
 # iPhone Duo
 
-iPlay5 is tuned for the iPhone Duo's near-square inner screen, and works on any iPhone running iOS 17 or later.
+iPlay5 is tuned for the iPhone Duo's near-square inner screen, and works on any iPhone or iPad running iOS 17 or later.
 
 ## Inner and outer screens
 
@@ -9,7 +9,7 @@ iPlay5 is tuned for the iPhone Duo's near-square inner screen, and works on any 
 - **Folding mid-game** pauses the picture and sound but keeps the connection open. Unfold to keep playing.
 - If iPlay5 ever mistakes the inner screen for the folded one (for example with an unusual Display Zoom setting), **Play here anyway** starts the stream regardless.
 
-On other iPhones, menus are portrait and the stream plays in landscape.
+On other iPhones, menus are portrait and the stream plays in landscape. On iPad, the app and the stream work in any orientation and window size.
 
 ## Controller
 

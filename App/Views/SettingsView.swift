@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreHaptics
 import SwiftUI
 
 /// Stream settings, shared by the main settings sheet and the in-stream menu.
@@ -220,6 +221,7 @@ private struct ControllerSettingsPage: View {
 	@Binding var settings: StreamSettings
 	var showsControllerTest: Bool
 	var onControllerTest: ((Bool) -> Void)?
+	private static let deviceHasHaptics = CHHapticEngine.capabilitiesForHardware().supportsHaptics
 
 	var body: some View {
 		Form {
@@ -238,25 +240,32 @@ private struct ControllerSettingsPage: View {
 
 			Section {
 				Toggle("Rumble", isOn: $settings.rumble)
-				Picker("Phone haptics", selection: $settings.phoneHaptics) {
-					ForEach(PhoneHaptics.allCases) { Text($0.label).tag($0) }
+				// iPads have no vibration motor
+				if Self.deviceHasHaptics {
+					Picker("Phone haptics", selection: $settings.phoneHaptics) {
+						ForEach(PhoneHaptics.allCases) { Text($0.label).tag($0) }
+					}
+					.disabled(!settings.rumble)
 				}
-				.disabled(!settings.rumble)
 			} header: {
 				Text("Vibration")
 			} footer: {
-				Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone).")
+				if Self.deviceHasHaptics {
+					Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone).")
+				} else {
+					Text("Rumble turns controller vibration on or off.")
+				}
 			}
 
 			Section {
-				Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
+				Toggle("\(DeviceLayout.isPad ? "iPad" : "Phone") gyro for motion controls", isOn: $settings.phoneMotion)
 				SettingsLink(title: "Gyro aiming", systemImage: "scope", value: settings.gyroAim.label) {
 					GyroAimSettingsPage(settings: $settings)
 				}
 			} header: {
 				Text("Motion")
 			} footer: {
-				Text("Controllers with a gyro (DualSense, DualShock 4, GameSir G8+ in its iOS mode) send their own motion. Phone gyro covers virtual controls and controllers without motion sensors, like a Backbone.")
+				Text("Controllers with a gyro (DualSense, DualShock 4, GameSir G8+ in its iOS mode) send their own motion. The \(DeviceLayout.deviceNoun)'s gyro covers virtual controls and controllers without motion sensors, like a Backbone.")
 			}
 
 			Section {
@@ -414,7 +423,7 @@ private struct DebugSettingsPage: View {
 			Section {
 				Toggle("Frame capture button", isOn: $settings.frameCapture)
 			} footer: {
-				Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to Files › On My iPhone › iPlay5 › Frame captures. Uses up to about 800 MB of memory while on.")
+				Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to \(DeviceLayout.filesLocation) › Frame captures. Uses up to about 800 MB of memory while on.")
 			}
 		}
 		.settingsPage("Debug")

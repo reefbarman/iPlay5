@@ -35,14 +35,14 @@ Settings › Controller › Vibration. **Rumble** is the master switch for every
 
 **Any other controller with motors** (including the GameSir G8+): rumble.
 
-**On the phone:** with virtual controls, or a controller without motors (like a Backbone), rumble, DualSense haptics and trigger effects play on the phone instead. L2 and R2 (on screen or on the controller) get a click where a weapon trigger gives way, a bump where resistance starts, and vibration while held. **Phone haptics** sets the strength: Full (default), Light or Off.
+**On the phone:** with virtual controls, or a controller without motors (like a Backbone), rumble, DualSense haptics and trigger effects play on the phone instead. L2 and R2 (on screen or on the controller) get a click where a weapon trigger gives way, a bump where resistance starts, and vibration while held. **Phone haptics** sets the strength: Full (default), Light or Off. iPads have no vibration motor, so the setting isn't shown there.
 
 ## Motion
 
 Settings › Controller › Motion.
 
 - Controllers with a gyro (DualSense, DualShock 4, the GameSir G8+ in its iOS mode, and others iOS reads motion from) send their own motion to the game.
-- **Phone gyro for motion controls** (on by default) uses the phone's gyro for virtual controls and controllers without motion sensors.
+- **Phone gyro for motion controls** (on by default, **iPad gyro for motion controls** on iPad) uses the device's own gyro for virtual controls and controllers without motion sensors.
 - When the PS5 asks to recentre motion, iPlay5 does.
 
 ## Gyro aiming

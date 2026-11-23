@@ -33,12 +33,12 @@ When the PS5 opens a text box (search, messages, Wi-Fi passwords), a **Type on y
 In the stream menu:
 
 - **Marketing screenshot mode** keeps the virtual controls and shortcuts visible while you frame the shot.
-- **Save screenshot** saves a PNG of the stream to **Files › On My iPhone › iPlay5**, then returns the controls to normal.
+- **Save screenshot** saves a PNG of the stream to **Files › On My iPhone › iPlay5** (**On My iPad** on iPad), then returns the controls to normal.
 
 ## Screens you might see
 
 - **No controller connected:** turn on or pair a controller and the stream connects as soon as it's found, or choose **Use virtual controls**, **Connect without controls** or **Cancel**.
-- **Turn your phone sideways:** the stream plays in landscape and connects once you turn.
+- **Turn your phone sideways:** on iPhone the stream plays in landscape and connects once you turn. On iPad it plays in any orientation, including Split View and Stage Manager windows, with the picture fitted to the window.
 - **Connection lost. Reconnecting…** and **Reconnecting with new settings…:** see [Reconnecting](connection.md#reconnecting).
 - **Disconnected:** **Reconnect** or **Close**.
 - **Open your phone to play** and **Paused:** iPhone Duo fold states, see [iPhone Duo](iphone-duo.md).

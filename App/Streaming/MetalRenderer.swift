@@ -1,6 +1,9 @@
 import CoreVideo
 import Metal
+// Missing from recent iOS Simulator SDKs, so simulator builds go without upscaling
+#if canImport(MetalFX)
 import MetalFX
+#endif
 import QuartzCore
 import UIKit
 import simd
@@ -24,9 +27,13 @@ private struct RenderUniforms {
 /// enabled, so the PS5's PQ signal goes to the display untouched and iOS
 /// handles the tone mapping for the panel.
 final class MetalRenderer {
+	#if canImport(MetalFX)
 	static let supportsMetalFX = MTLCreateSystemDefaultDevice().map {
 		MTLFXSpatialScalerDescriptor.supportsDevice($0)
 	} ?? false
+	#else
+	static let supportsMetalFX = false
+	#endif
 
 	let device: MTLDevice
 	private let queue: MTLCommandQueue
@@ -52,7 +59,9 @@ final class MetalRenderer {
 	}
 	/// Accessed under renderLock. Also remember unsuccessful configurations so we don't retry every frame.
 	private var spatialKey: SpatialKey?
+	#if canImport(MetalFX)
 	private var spatialScaler: MTLFXSpatialScaler?
+	#endif
 
 	private let lock = NSLock()
 	private weak var layer: CAMetalLayer?
@@ -470,7 +479,9 @@ final class MetalRenderer {
 			&& scaledSize.x > lumaTex.width && scaledSize.y > lumaTex.height
 		if !useMetalFX {
 			spatialKey = nil
+			#if canImport(MetalFX)
 			spatialScaler = nil
+			#endif
 		}
 
 		func drawFrame(luma: MTLTexture, chroma: MTLTexture, to texture: MTLTexture, in buffer: MTLCommandBuffer) {
@@ -647,6 +658,12 @@ final class MetalRenderer {
 		return picked
 	}
 
+	#if !canImport(MetalFX)
+	private func drawMetalFX(
+		luma: MTLTexture, chroma: MTLTexture, uniforms: RenderUniforms, size: SIMD2<Int>, downsample: Bool,
+		to texture: MTLTexture, in commandBuffer: MTLCommandBuffer
+	) -> Bool { false }
+	#else
 	private func drawMetalFX(
 		luma: MTLTexture, chroma: MTLTexture, uniforms: RenderUniforms, size: SIMD2<Int>, downsample: Bool,
 		to texture: MTLTexture, in commandBuffer: MTLCommandBuffer
@@ -728,6 +745,7 @@ final class MetalRenderer {
 		scaler.inputContentHeight = key.input.y
 		return scaler
 	}
+	#endif
 
 	private func makeDrawEncoder(to texture: MTLTexture, in commandBuffer: MTLCommandBuffer) -> MTLRenderCommandEncoder? {
 		let pass = MTLRenderPassDescriptor()

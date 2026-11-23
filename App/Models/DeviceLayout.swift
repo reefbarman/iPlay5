@@ -7,7 +7,17 @@ import UIKit
 /// screen's short side is far bigger than any normal iPhone's (1320px at most).
 /// Sizes are compared in pixels, not points: Display Zoom ("Larger Text")
 /// shrinks the point size of the same panel.
+///
+/// iPads are never foldables, even though the bigger ones have screens as wide
+/// as the Duo's inner one. Their windows can be any size (Split View, Stage
+/// Manager), so a small window mustn't read as "folded".
 enum DeviceLayout {
+	static let isPad = UIDevice.current.userInterfaceIdiom == .pad
+	/// What to call this device in messages: "phone" or "iPad"
+	static var deviceNoun: String { isPad ? "iPad" : "phone" }
+	/// Where the app's documents show up in the Files app
+	static var filesLocation: String { isPad ? "Files › On My iPad › iPlay5" : "Files › On My iPhone › iPlay5" }
+
 	private static let innerScreenMinShortSidePixels: CGFloat = 1700
 	/// Model identifiers of known foldables. Others are picked up the first time
 	/// an inner-screen-sized window is seen.
@@ -23,7 +33,7 @@ enum DeviceLayout {
 	}()
 
 	static var isFoldable: Bool {
-		knownFoldables.contains(modelIdentifier) || UserDefaults.standard.bool(forKey: seenInnerScreenKey)
+		!isPad && (knownFoldables.contains(modelIdentifier) || UserDefaults.standard.bool(forKey: seenInnerScreenKey))
 	}
 
 	static var nativeScale: CGFloat {
@@ -42,7 +52,7 @@ enum DeviceLayout {
 	static func noteWindowSize(_ size: CGSize) {
 		let inner = isInnerScreen(size)
 		log.notice("Window \(Int(size.width), privacy: .public)x\(Int(size.height), privacy: .public)pt at \(nativeScale, privacy: .public)x: foldable \(isFoldable, privacy: .public), inner screen \(inner, privacy: .public)")
-		if inner, !UserDefaults.standard.bool(forKey: seenInnerScreenKey) {
+		if inner, !isPad, !UserDefaults.standard.bool(forKey: seenInnerScreenKey) {
 			UserDefaults.standard.set(true, forKey: seenInnerScreenKey)
 		}
 	}

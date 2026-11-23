@@ -25,7 +25,7 @@ See [Connection](connection.md) for details.
 
 Settings › Debug › Frame capture button. Off by default.
 
-Adds a button in the bottom-left corner of the stream that saves the last couple of seconds of frames, real and generated, to **Files › On My iPhone › iPlay5 › Frame captures**. It's for reporting [frame generation](picture.md#frame-generation-experimental) problems. It uses up to about 800 MB of memory while on, so leave it off otherwise.
+Adds a button in the bottom-left corner of the stream that saves the last couple of seconds of frames, real and generated, to **Files › On My iPhone › iPlay5 › Frame captures** (**On My iPad** on iPad). It's for reporting [frame generation](picture.md#frame-generation-experimental) problems. It uses up to about 800 MB of memory while on, so leave it off otherwise.
 
 ## Known limitations
 
