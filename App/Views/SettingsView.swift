@@ -8,8 +8,10 @@ struct StreamSettingsForm: View {
 	var customConsoleName: String?
 	/// Overrides the bitrate slider's label, e.g. while streaming on a network with a learned bitrate
 	var bitrateTitle: String?
-	/// Not while streaming: the stream has the controller
 	var showsControllerTest = false
+	/// While streaming: called with true when the controller test opens, so the
+	/// stream can let go of the controller, and false when it closes
+	var onControllerTest: ((Bool) -> Void)?
 
 	@Environment(BitrateMemory.self) private var bitrateMemory
 	@State private var micDenied = AVAudioApplication.shared.recordPermission == .denied
@@ -116,7 +118,7 @@ struct StreamSettingsForm: View {
 				Label("Controls Guide", systemImage: "gamecontroller")
 			}
 			if showsControllerTest {
-				NavigationLink { ControllerTestView() } label: {
+				NavigationLink { ControllerTestView(onActiveChange: onControllerTest) } label: {
 					Label("Controller Test", systemImage: "dot.radiowaves.left.and.right")
 				}
 			}

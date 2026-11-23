@@ -1003,7 +1003,8 @@ struct StreamView: View {
 					}
 				}
 				StreamSettingsForm(settings: settings, customConsoleName: customName,
-					bitrateTitle: baseSettings.autoBitrate && bitrateKey != nil ? "Bitrate on this network" : nil)
+					bitrateTitle: baseSettings.autoBitrate && bitrateKey != nil ? "Bitrate on this network" : nil,
+					showsControllerTest: true, onControllerTest: { [session] in session?.lendController($0) })
 				Section {
 					Toggle("Marketing screenshot mode", isOn: $marketingScreenshotMode)
 					Button {

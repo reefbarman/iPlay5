@@ -168,6 +168,9 @@ final class ControllerTester {
 }
 
 struct ControllerTestView: View {
+	/// Set when opened during a stream: true on open so the stream lets go of the controller, false on close
+	var onActiveChange: ((Bool) -> Void)?
+
 	@Environment(SettingsStore.self) private var store
 	@State private var tester = ControllerTester()
 	@State private var triggerPreset = ControllerTester.TriggerPreset.off
@@ -205,6 +208,9 @@ struct ControllerTestView: View {
 				Text(tester.controllerName ?? "No controller")
 			} footer: {
 				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on.")
+				if onActiveChange != nil {
+					Text("While this screen is open, the PS5 doesn't get anything from your controller, and the game's rumble and lights don't reach it.")
+				}
 			}
 
 			Section {
@@ -272,10 +278,14 @@ struct ControllerTestView: View {
 		.onChange(of: triggerPreset) { _, preset in tester.setTriggers(preset) }
 		.onChange(of: player) { _, number in tester.setPlayer(number) }
 		.onAppear {
+			onActiveChange?(true)
 			let orientation = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation
 			tester.start(selectIsTouchpad: store.settings.selectIsTouchpad, orientation: orientation)
 		}
-		.onDisappear { tester.stop() }
+		.onDisappear {
+			tester.stop()
+			onActiveChange?(false)
+		}
 	}
 
 	private static func stick(_ x: Int16, _ y: Int16) -> String {

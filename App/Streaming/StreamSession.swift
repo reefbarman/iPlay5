@@ -318,7 +318,7 @@ final class StreamSession {
 		}
 		input.onTouch = { [weak self] event in self?.handleTouch(event) }
 		input.onGyroAim = { [weak self] gyro, ts in self?.gyroAimed(gyro: gyro, timestamp: ts) }
-		input.start()
+		if !controllerLent { input.start() }
 
 		audio.start(session: created, mic: settings.microphone)
 		audio.muted = paused
@@ -404,6 +404,25 @@ final class StreamSession {
 		guard backgroundTask != .invalid else { return }
 		UIApplication.shared.endBackgroundTask(backgroundTask)
 		backgroundTask = .invalid
+	}
+
+	/// The controller test screen has the controller: the console sees it let go,
+	/// and its rumble, haptics, lightbar and trigger effects don't reach it
+	@ObservationIgnored private var controllerLent = false
+
+	/// Hands the controller to the controller test screen and takes it back
+	func lendController(_ lent: Bool) {
+		guard lent != controllerLent else { return }
+		controllerLent = lent
+		if lent {
+			input.suspend()
+			physicalPad = CKPadState()
+			gyroStickPosition = .zero
+			gyroStick.reset()
+			sendPad()
+		} else if handle != nil {
+			input.start()
+		}
 	}
 
 	/// Lets go of every button, stick and touch, so nothing stays held on the console

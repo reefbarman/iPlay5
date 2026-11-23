@@ -84,6 +84,13 @@ final class ControllerInput {
 	}
 
 	func stop() {
+		suspend()
+		feedback.reset()
+	}
+
+	/// Lets go of the controller but remembers what the console last asked for,
+	/// so `start()` puts the lightbar, player lights and trigger effects back
+	func suspend() {
 		observers.forEach(NotificationCenter.default.removeObserver)
 		observers.removeAll()
 		comboTimer?.invalidate()
@@ -100,7 +107,6 @@ final class ControllerInput {
 		lastPad = CKPadState()
 		releaseTouchpad()
 		feedback.detach()
-		feedback.reset()
 	}
 
 	// MARK: - Controller selection
