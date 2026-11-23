@@ -50,6 +50,8 @@ final class ControllerInput {
 	}
 	/// `gyroAimEnabled` for the motion queue
 	private let gyroAim = OSAllocatedUnfairLock(initialState: false)
+	/// Takes the gyro's resting reading off, for whichever motion source is in use
+	private let calibration = OSAllocatedUnfairLock(initialState: GyroCalibration())
 
 	private(set) var controllerName: String?
 	private var controller: GCController?
@@ -135,6 +137,7 @@ final class ControllerInput {
 		}
 		controller = next
 		controllerName = next?.vendorName
+		calibration.withLock { $0.reset() }
 		feedback.attach(next)
 		guard let next, let pad = next.extendedGamepad else {
 			lastPad = CKPadState()
@@ -284,7 +287,8 @@ final class ControllerInput {
 	}
 
 	/// Any thread
-	private func sendMotion(gyro: SIMD3<Float>, accel: SIMD3<Float>, timestamp: UInt32) {
+	private func sendMotion(gyro rawGyro: SIMD3<Float>, accel: SIMD3<Float>, timestamp: UInt32) {
+		let gyro = calibration.withLock { $0.update(gyro: rawGyro, accel: accel, timestamp: timestamp) }
 		guard gyroAim.withLock({ $0 }) else {
 			onMotion?(gyro, accel, timestamp)
 			return

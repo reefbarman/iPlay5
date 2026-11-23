@@ -44,6 +44,7 @@ Settings › Controller › Motion.
 - Controllers with a gyro (DualSense, DualShock 4, the GameSir G8+ in its iOS mode, and others iOS reads motion from) send their own motion to the game.
 - **Phone gyro for motion controls** (on by default, **iPad gyro for motion controls** on iPad) uses the device's own gyro for virtual controls and controllers without motion sensors.
 - When the PS5 asks to recentre motion, iPlay5 does.
+- Every gyro reads a little even when it isn't moving, which shows as drift. Whenever the controller is held still for a moment (resting on a table, or steady in your hands), iPlay5 measures that reading and takes it off, for both motion controls and gyro aiming. If the camera drifts right after connecting a controller, hold it still for a second.
 
 ## Gyro aiming
 
