@@ -14,15 +14,6 @@ struct StreamSettingsForm: View {
 	var onControllerTest: ((Bool) -> Void)?
 
 	@Environment(BitrateMemory.self) private var bitrateMemory
-	@State private var micDenied = AVAudioApplication.shared.recordPermission == .denied
-
-	private var upscalingSelection: Binding<UpscalingMode> {
-		Binding(
-			get: { settings.upscaling.usesMetalFX && !MetalRenderer.supportsMetalFX ? .sharp : settings.upscaling },
-			set: { settings.upscaling = $0 })
-	}
-
-	private var opacityPercent: Int { Int((settings.controlsOpacity * 100).rounded()) }
 
 	var body: some View {
 		VideoSettingsSection(settings: $settings, customConsoleName: customConsoleName, bitrateTitle: bitrateTitle)
@@ -33,157 +24,400 @@ struct StreamSettingsForm: View {
 				Button("Forget learned bitrates", role: .destructive) { bitrateMemory.forgetAll() }
 			}
 		} footer: {
-			Text("Remembers the bitrate that works for each console on each Wi-Fi network, so you don't have to keep tuning it. A new network starts at the starting bitrate above. After a few minutes of smooth play it goes up about a fifth next time (up to 100 Mbps, or your starting bitrate if that's higher), and after a session that drops video it comes down a quarter. It never changes mid-game. Moving the bitrate slider while you play, or applying an Optimise connection suggestion, sets it for that network.")
+			Text("Remembers the bitrate that works for each console on each Wi-Fi network, so you don't have to keep tuning it. A new network starts at the starting bitrate above. It never changes mid-game.")
+			Text("After a few minutes of smooth play it goes up about a fifth next time (up to 100 Mbps, or your starting bitrate if that's higher). After a session that drops video it comes down a quarter. Moving the bitrate slider while you play, or applying an Optimise connection suggestion, sets it for that network.")
 		}
 
 		Section {
-			Picker("Picture", selection: $settings.displayMode) {
-				ForEach(DisplayMode.allCases) { Text($0.label).tag($0) }
+			SettingsLink(title: "Display", systemImage: "tv", summary: settings.displaySummary) {
+				DisplaySettingsPage(settings: $settings)
 			}
-			Picker("Upscaling", selection: upscalingSelection) {
-				ForEach(UpscalingMode.allCases.filter { !$0.usesMetalFX || MetalRenderer.supportsMetalFX }) {
-					Text($0.label).tag($0)
+			SettingsLink(title: "Controller", systemImage: "gamecontroller", summary: settings.controllerSummary) {
+				ControllerSettingsPage(settings: $settings, showsControllerTest: showsControllerTest, onControllerTest: onControllerTest)
+			}
+			SettingsLink(title: "Virtual controls", systemImage: "hand.tap", summary: settings.virtualControlsSummary) {
+				VirtualControlsSettingsPage(settings: $settings)
+			}
+			SettingsLink(title: "Audio", systemImage: "mic", summary: settings.microphone ? "Microphone on" : "Microphone off") {
+				AudioSettingsPage(settings: $settings)
+			}
+			SettingsLink(title: "Network", systemImage: "wifi", summary: settings.networkSummary) {
+				NetworkSettingsPage(settings: $settings, customConsoleName: customConsoleName)
+			}
+			SettingsLink(title: "Debug", systemImage: "ant", summary: settings.frameCapture ? "Frame capture on" : "Off") {
+				DebugSettingsPage(settings: $settings)
+			}
+		}
+	}
+}
+
+/// One-line summaries of each settings page, shown under its row
+private extension StreamSettings {
+	static func summary(_ parts: [String?]) -> String {
+		parts.compactMap { $0 }.joined(separator: " · ")
+	}
+
+	var displaySummary: String {
+		let upscaling = upscaling.usesMetalFX && !MetalRenderer.supportsMetalFX ? UpscalingMode.sharp : upscaling
+		let hasHighRefresh = UIScreen.main.maximumFramesPerSecond > 60
+		return Self.summary([
+			displayMode.label,
+			upscaling.label,
+			hasHighRefresh ? (highRefreshDisplay ? "120 Hz" : "60 Hz") : nil,
+			frameGeneration ? "Frame gen" : nil,
+			statsMode == .off ? nil : "\(statsMode.label) stats",
+		])
+	}
+
+	var controllerSummary: String {
+		let gyro: String? = switch gyroAim {
+		case .off: nil
+		case .always: "Gyro aim always"
+		case .holdingL2: "Gyro aim on L2"
+		case .holdingR1: "Gyro aim on R1"
+		}
+		return Self.summary([
+			rumble ? "Rumble on" : "Rumble off",
+			gyro,
+			selectIsTouchpad ? "Select is touchpad" : nil,
+		])
+	}
+
+	var virtualControlsSummary: String {
+		guard virtualControls != .never else { return virtualControls.label }
+		return Self.summary([
+			virtualControls.label,
+			controlsSize.label,
+			"\(Int((controlsOpacity * 100).rounded()))%",
+			fixedSticks ? "Fixed sticks" : nil,
+		])
+	}
+
+	var networkSummary: String {
+		Self.summary([
+			networkSmoothing ? "Smoothing on" : "Smoothing off",
+			takionV20 ? "Takion v20" : nil,
+		])
+	}
+}
+
+/// A row that opens a settings page. `value` sits on the right, `summary` under the title.
+private struct SettingsLink<Destination: View>: View {
+	let title: String
+	let systemImage: String
+	var value: String?
+	var summary: String?
+	@ViewBuilder var destination: () -> Destination
+
+	var body: some View {
+		NavigationLink(destination: destination) {
+			LabeledContent {
+				if let value { Text(value) }
+			} label: {
+				Label {
+					Text(title)
+					if let summary {
+						Text(summary)
+					}
+				} icon: {
+					Image(systemName: systemImage)
 				}
 			}
-			if UIScreen.main.maximumFramesPerSecond > 60 {
-				Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
+		}
+	}
+}
+
+/// A slider with its title and current value above it
+private struct LabeledSlider: View {
+	let title: String
+	@Binding var value: Double
+	let range: ClosedRange<Double>
+	let step: Double
+	let valueText: String
+
+	var body: some View {
+		VStack(alignment: .leading) {
+			HStack {
+				Text(title)
+				Spacer()
+				Text(valueText).foregroundStyle(.secondary).monospacedDigit()
 			}
-			Toggle("Frame generation (experimental)", isOn: $settings.frameGeneration)
-			Picker("Stats", selection: $settings.statsMode) {
-				ForEach(StatsMode.allCases) { Text($0.label).tag($0) }
+			Slider(value: $value, in: range, step: step)
+		}
+	}
+}
+
+private extension View {
+	func settingsPage(_ title: String) -> some View {
+		navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+	}
+}
+
+private func multiplier(_ value: Double) -> String {
+	"\(value.formatted(.number.precision(.fractionLength(0...2))))×"
+}
+
+/// Picture fit, upscaling, refresh rate, frame generation and stats
+private struct DisplaySettingsPage: View {
+	@Binding var settings: StreamSettings
+
+	private var upscalingSelection: Binding<UpscalingMode> {
+		Binding(
+			get: { settings.upscaling.usesMetalFX && !MetalRenderer.supportsMetalFX ? .sharp : settings.upscaling },
+			set: { settings.upscaling = $0 })
+	}
+
+	var body: some View {
+		Form {
+			Section {
+				Picker("Picture", selection: $settings.displayMode) {
+					ForEach(DisplayMode.allCases) { Text($0.label).tag($0) }
+				}
+			} footer: {
+				Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow.")
 			}
-		} header: {
-			Text("Display")
-		} footer: {
-			Text("Fit shows the whole picture, with black bars where the screen is a different shape to 16:9. Zoom fills the screen and crops the overflow. 120 Hz screen gets each frame on screen sooner, for a little more battery. Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. The FG button in the bottom-right corner of the stream turns it on and off. Stats sit in the black bar above the picture: Simple shows the essentials, Advanced shows everything.")
-			if MetalRenderer.supportsMetalFX {
-				Text("MetalFX Spatial enlarges the picture to the screen's resolution. MetalFX 4K enlarges it to 3840×2160 and then scales it down to the screen, which can look smoother but uses more GPU and battery.")
+
+			Section {
+				Picker("Upscaling", selection: upscalingSelection) {
+					ForEach(UpscalingMode.allCases.filter { !$0.usesMetalFX || MetalRenderer.supportsMetalFX }) {
+						Text($0.label).tag($0)
+					}
+				}
+			} footer: {
+				if MetalRenderer.supportsMetalFX {
+					Text("MetalFX Spatial enlarges the picture to the screen's resolution. MetalFX 4K enlarges it to 3840×2160 and then scales it down to the screen, which can look smoother but uses more GPU and battery.")
+				}
+			}
+
+			Section {
+				if UIScreen.main.maximumFramesPerSecond > 60 {
+					Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
+				}
+				Toggle("Frame generation (experimental)", isOn: $settings.frameGeneration)
+			} header: {
+				Text("Smoothness")
+			} footer: {
+				if UIScreen.main.maximumFramesPerSecond > 60 {
+					Text("120 Hz screen gets each frame on screen sooner, for a little more battery.")
+				}
+				Text("Frame generation makes an extra frame between each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. 60 fps needs the 120 Hz screen. The FG button in the bottom-right corner of the stream turns it on and off.")
+			}
+
+			Section {
+				Picker("Stats", selection: $settings.statsMode) {
+					ForEach(StatsMode.allCases) { Text($0.label).tag($0) }
+				}
+			} footer: {
+				Text("Stats sit in the black bar above the picture. Simple shows the essentials, Advanced shows everything.")
 			}
 		}
+		.settingsPage("Display")
+	}
+}
 
-		Section {
-			Toggle("Rumble", isOn: $settings.rumble)
-			Picker("Phone haptics", selection: $settings.phoneHaptics) {
-				ForEach(PhoneHaptics.allCases) { Text($0.label).tag($0) }
+/// Vibration, motion, buttons and controller tools
+private struct ControllerSettingsPage: View {
+	@Binding var settings: StreamSettings
+	var showsControllerTest: Bool
+	var onControllerTest: ((Bool) -> Void)?
+
+	var body: some View {
+		Form {
+			Section {
+				NavigationLink { ControlsGuideView() } label: {
+					Label("Controls Guide", systemImage: "book")
+				}
+				if showsControllerTest {
+					ControllerTestLink(onActiveChange: onControllerTest) {
+						Label("Controller Test", systemImage: "dot.radiowaves.left.and.right")
+					}
+				}
+			} footer: {
+				Text("Hold Select + Start for a second during a stream to open the menu.")
 			}
-			.disabled(!settings.rumble)
-			Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
-			Picker("Gyro aiming", selection: $settings.gyroAim) {
-				ForEach(GyroAimMode.allCases) { Text($0.label).tag($0) }
+
+			Section {
+				Toggle("Rumble", isOn: $settings.rumble)
+				Picker("Phone haptics", selection: $settings.phoneHaptics) {
+					ForEach(PhoneHaptics.allCases) { Text($0.label).tag($0) }
+				}
+				.disabled(!settings.rumble)
+			} header: {
+				Text("Vibration")
+			} footer: {
+				Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone).")
 			}
+
+			Section {
+				Toggle("Phone gyro for motion controls", isOn: $settings.phoneMotion)
+				SettingsLink(title: "Gyro aiming", systemImage: "scope", value: settings.gyroAim.label) {
+					GyroAimSettingsPage(settings: $settings)
+				}
+			} header: {
+				Text("Motion")
+			} footer: {
+				Text("Controllers with a gyro (DualSense, DualShock 4, GameSir G8+ in its iOS mode) send their own motion. Phone gyro covers virtual controls and controllers without motion sensors, like a Backbone.")
+			}
+
+			Section {
+				Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
+				if HomeButtonSetting.isSupported {
+					Button("Home Button Settings") { HomeButtonSetting.openSettings() }
+				}
+			} header: {
+				Text("Buttons")
+			} footer: {
+				if HomeButtonSetting.isSupported {
+					Text("Home Button Settings opens the iOS setting for what your controller's Home button does in apps. Let apps use it and Home opens the PS5 menu, otherwise iOS opens its Game Overlay. Open it with your controller connected.")
+				}
+			}
+		}
+		.settingsPage("Controller")
+	}
+}
+
+/// Turning controller (or phone) motion into right stick movement, and tuning it to the game
+private struct GyroAimSettingsPage: View {
+	@Binding var settings: StreamSettings
+
+	var body: some View {
+		Form {
+			Section {
+				Picker("Gyro aiming", selection: $settings.gyroAim) {
+					ForEach(GyroAimMode.allCases) { Text($0.label).tag($0) }
+				}
+			} footer: {
+				Text("Turns the controller's motion (or the phone's, if the controller has none) into right stick movement, on top of the stick itself, and stops sending motion to the game.")
+			}
+
 			if settings.gyroAim != .off {
-				Picker("Look left/right by", selection: $settings.gyroAimTurning) {
-					ForEach(GyroAimTurning.allCases) { Text($0.label).tag($0) }
-				}
-				VStack(alignment: .leading) {
-					HStack {
-						Text("Gyro sensitivity")
-						Spacer()
-						Text("\(settings.gyroAimSensitivity.formatted(.number.precision(.fractionLength(0...2))))×").foregroundStyle(.secondary).monospacedDigit()
+				Section {
+					Picker("Look left/right by", selection: $settings.gyroAimTurning) {
+						ForEach(GyroAimTurning.allCases) { Text($0.label).tag($0) }
 					}
-					Slider(value: $settings.gyroAimSensitivity, in: 0.25...3, step: 0.05)
+					LabeledSlider(title: "Gyro sensitivity", value: $settings.gyroAimSensitivity, range: 0.25...3, step: 0.05,
+						valueText: multiplier(settings.gyroAimSensitivity))
+					LabeledSlider(title: "Up/down speed", value: $settings.gyroAimVerticalScale, range: 0.5...3, step: 0.05,
+						valueText: multiplier(settings.gyroAimVerticalScale))
+					Toggle("Invert gyro up/down", isOn: $settings.gyroAimInvertY)
+				} header: {
+					Text("Aiming")
+				} footer: {
+					Text("Tilt like a steering wheel or turn left and right to look around (Look left/right by picks which), and tip the top towards or away from you to look up and down.")
+					Text("Up/down speed makes looking up and down faster than left and right, as most games turn slower vertically.")
 				}
-				VStack(alignment: .leading) {
-					HStack {
-						Text("Up/down speed")
-						Spacer()
-						Text("\(settings.gyroAimVerticalScale.formatted(.number.precision(.fractionLength(0...2))))×").foregroundStyle(.secondary).monospacedDigit()
-					}
-					Slider(value: $settings.gyroAimVerticalScale, in: 0.5...3, step: 0.05)
+
+				Section {
+					LabeledSlider(title: "Game dead zone", value: $settings.gyroAimDeadzone, range: 0...0.4, step: 0.01,
+						valueText: "\(Int((settings.gyroAimDeadzone * 100).rounded()))%")
+					Toggle("Dead zone per direction", isOn: $settings.gyroAimPerAxisDeadzone)
+				} header: {
+					Text("Match the game")
+				} footer: {
+					Text("Game dead zone is how much stick movement the game ignores. Raise it until small, slow movements move the camera, and lower it if the camera creeps when you're nearly still.")
+					Text("Dead zone per direction pushes left/right and up/down past the dead zone separately, so the small part of a diagonal correction isn't lost. Try it if slight up/down adjustments get ignored while moving sideways, or the other way round.")
 				}
-				VStack(alignment: .leading) {
-					HStack {
-						Text("Game dead zone")
-						Spacer()
-						Text("\(Int((settings.gyroAimDeadzone * 100).rounded()))%").foregroundStyle(.secondary).monospacedDigit()
-					}
-					Slider(value: $settings.gyroAimDeadzone, in: 0...0.4, step: 0.01)
+
+				Section {
+					LabeledSlider(title: "Fine aim boost", value: $settings.gyroAimResponseCurve, range: 1...3, step: 0.1,
+						valueText: settings.gyroAimResponseCurve.formatted(.number.precision(.fractionLength(1))))
+				} footer: {
+					Text("Undoes games slowing down small stick movements. Raise it if small corrections feel sluggish, lower it if they overshoot. 1 turns it off.")
 				}
-				Toggle("Dead zone per direction", isOn: $settings.gyroAimPerAxisDeadzone)
-				VStack(alignment: .leading) {
-					HStack {
-						Text("Fine aim boost")
-						Spacer()
-						Text("\(settings.gyroAimResponseCurve.formatted(.number.precision(.fractionLength(1))))").foregroundStyle(.secondary).monospacedDigit()
-					}
-					Slider(value: $settings.gyroAimResponseCurve, in: 1...3, step: 0.1)
-				}
-				Toggle("Invert gyro up/down", isOn: $settings.gyroAimInvertY)
-			}
-			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
-			if HomeButtonSetting.isSupported {
-				Button("Home Button Settings") { HomeButtonSetting.openSettings() }
-			}
-			NavigationLink { ControlsGuideView() } label: {
-				Label("Controls Guide", systemImage: "gamecontroller")
-			}
-			if showsControllerTest {
-				ControllerTestLink(onActiveChange: onControllerTest) {
-					Label("Controller Test", systemImage: "dot.radiowaves.left.and.right")
-				}
-			}
-		} header: {
-			Text("Controller")
-		} footer: {
-			Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone). Controllers with a gyro (DualSense, DualShock 4, GameSir G8+ in its iOS mode) send their own motion. Phone gyro covers virtual controls and controllers without motion sensors, like a Backbone. Gyro aiming turns the controller's motion (or the phone's, if the controller has none) into right stick movement, on top of the stick itself, and stops sending motion to the game. Tilt like a steering wheel or turn left and right to look around (Look left/right by picks which), and tip the top towards or away from you to look up and down. Up/down speed makes looking up and down faster than left and right, as most games turn slower vertically. Game dead zone is how much stick movement the game ignores: raise it until small, slow movements move the camera, and lower it if the camera creeps when you're nearly still. Fine aim boost undoes games slowing down small stick movements: raise it if small corrections feel sluggish, lower it if they overshoot. 1 turns it off. Dead zone per direction pushes left/right and up/down past the dead zone separately, so the small part of a diagonal correction isn't lost. Try it if slight up/down adjustments get ignored while moving sideways, or the other way round. Hold Select + Start for a second during a stream to open the menu.")
-			if HomeButtonSetting.isSupported {
-				Text("Home Button Settings opens the iOS setting for what your controller's Home button does in apps. Let apps use it and Home opens the PS5 menu, otherwise iOS opens its Game Overlay. Open it with your controller connected.")
 			}
 		}
+		.settingsPage("Gyro Aiming")
+	}
+}
 
-		Section {
-			Toggle("Microphone", isOn: $settings.microphone)
-				.onChange(of: settings.microphone) { _, on in
-					guard on else { return }
-					AVAudioApplication.requestRecordPermission { granted in
-						DispatchQueue.main.async {
-							micDenied = !granted
-							if !granted { settings.microphone = false }
+/// On-screen controls
+private struct VirtualControlsSettingsPage: View {
+	@Binding var settings: StreamSettings
+
+	var body: some View {
+		Form {
+			Section {
+				Picker("Show", selection: $settings.virtualControls) {
+					ForEach(VirtualControlsMode.allCases) { Text($0.label).tag($0) }
+				}
+			} footer: {
+				Text("Auto shows virtual controls when no supported controller is connected.")
+			}
+
+			if settings.virtualControls != .never {
+				Section {
+					Picker("Size", selection: $settings.controlsSize) {
+						ForEach(ControlsSize.allCases) { Text($0.label).tag($0) }
+					}
+					LabeledSlider(title: "Opacity", value: $settings.controlsOpacity, range: 0.2...1, step: 0.05,
+						valueText: "\(Int((settings.controlsOpacity * 100).rounded()))%")
+				}
+
+				Section {
+					Toggle("Fixed sticks", isOn: $settings.fixedSticks)
+				} footer: {
+					Text("Sticks normally start wherever your thumb lands in the lower half. Fixed sticks stay in one spot on each side instead, and a touch near one moves it straight away.")
+				}
+			}
+		}
+		.settingsPage("Virtual Controls")
+	}
+}
+
+/// Microphone for game and party chat
+private struct AudioSettingsPage: View {
+	@Binding var settings: StreamSettings
+	@State private var micDenied = AVAudioApplication.shared.recordPermission == .denied
+
+	var body: some View {
+		Form {
+			Section {
+				Toggle("Microphone", isOn: $settings.microphone)
+					.onChange(of: settings.microphone) { _, on in
+						guard on else { return }
+						AVAudioApplication.requestRecordPermission { granted in
+							DispatchQueue.main.async {
+								micDenied = !granted
+								if !granted { settings.microphone = false }
+							}
 						}
 					}
+			} footer: {
+				if micDenied {
+					Text("iPlay5 doesn't have access to the microphone. Turn it on in Settings › Apps › iPlay5.")
 				}
-		} header: {
-			Text("Audio")
-		} footer: {
-			if micDenied {
-				Text("iPlay5 doesn't have access to the microphone. Turn it on in Settings › Apps › iPlay5.")
+				Text("Sends your voice to the PS5 for game and party chat. Tap the mic button in the bottom-left corner of the stream to mute it.")
+				Text("On the phone's speaker, echo cancellation stops your party hearing the game. With AirPods or other Bluetooth headphones the phone's mic is used, unless you're on iOS 26 with AirPods that support high-quality recording.")
 			}
-			Text("Microphone sends your voice to the PS5 for game and party chat. Tap the mic button in the bottom-left corner of the stream to mute it. On the phone's speaker, echo cancellation stops your party hearing the game. With AirPods or other Bluetooth headphones the phone's mic is used, unless you're on iOS 26 with AirPods that support high-quality recording.")
 		}
+		.settingsPage("Audio")
+	}
+}
 
-		Section {
-			Picker("Show", selection: $settings.virtualControls) {
-				ForEach(VirtualControlsMode.allCases) { Text($0.label).tag($0) }
+private struct NetworkSettingsPage: View {
+	@Binding var settings: StreamSettings
+	var customConsoleName: String?
+
+	var body: some View {
+		Form {
+			NetworkSettingsSections(settings: $settings, customConsoleName: customConsoleName)
+		}
+		.settingsPage("Network")
+	}
+}
+
+private struct DebugSettingsPage: View {
+	@Binding var settings: StreamSettings
+
+	var body: some View {
+		Form {
+			Section {
+				Toggle("Frame capture button", isOn: $settings.frameCapture)
+			} footer: {
+				Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to Files › On My iPhone › iPlay5 › Frame captures. Uses up to about 800 MB of memory while on.")
 			}
-			if settings.virtualControls != .never {
-				Picker("Size", selection: $settings.controlsSize) {
-					ForEach(ControlsSize.allCases) { Text($0.label).tag($0) }
-				}
-				VStack(alignment: .leading) {
-					HStack {
-						Text("Opacity")
-						Spacer()
-						Text("\(opacityPercent)%").foregroundStyle(.secondary).monospacedDigit()
-					}
-					Slider(value: $settings.controlsOpacity, in: 0.2...1, step: 0.05)
-				}
-				Toggle("Fixed sticks", isOn: $settings.fixedSticks)
-			}
-		} header: {
-			Text("Virtual controls")
-		} footer: {
-			Text("Auto shows virtual controls when no supported controller is connected. Sticks normally start wherever your thumb lands in the lower half. Fixed sticks stay in one spot on each side instead, and a touch near one moves it straight away.")
 		}
-
-		NetworkSettingsSections(settings: $settings, customConsoleName: customConsoleName)
-
-		Section {
-			Toggle("Frame capture button", isOn: $settings.frameCapture)
-		} header: {
-			Text("Debug")
-		} footer: {
-			Text("Adds a button at the bottom left of the stream that saves the last couple of seconds of frames, real and generated, to Files › On My iPhone › iPlay5 › Frame captures. Uses up to about 800 MB of memory while on.")
-		}
+		.settingsPage("Debug")
 	}
 }
 
@@ -218,7 +452,8 @@ struct VideoSettingsSection: View {
 		} header: {
 			Text(customConsoleName.map { "Video for \($0)" } ?? "Video")
 		} footer: {
-			Text("PS5 Remote Play tops out at 1080p60. The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. Above 100 Mbps needs a strong connection (ideally the PS5 on Ethernet and 5 GHz or 6 GHz Wi-Fi) or you may see stutter. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
+			Text("PS5 Remote Play tops out at 1080p60. HDR needs H.265 and HDR turned on in the PS5's video output settings. Changing these reconnects the stream.")
+			Text("The PS5 may cap the bitrate below what you ask for, so watch the stats overlay. Above 100 Mbps needs a strong connection (ideally the PS5 on Ethernet and 5 GHz or 6 GHz Wi-Fi) or you may see stutter.")
 			if customConsoleName == nil {
 				Text("To give one console its own video and network settings, swipe left on it in the console list and tap Settings.")
 			}
