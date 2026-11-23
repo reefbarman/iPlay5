@@ -9,8 +9,8 @@ import UIKit
 /// - Buttons are mapped by position (A/bottom = Cross, B/right = Circle, ...).
 /// - The Home/PS button and the other system buttons are claimed from iOS so
 ///   pressing PS opens the PS5 menu instead of the iOS overlay.
-/// - Motion comes from the controller if it has sensors (DualSense), otherwise
-///   from the phone (e.g. clamped in a GameSir G8+).
+/// - Motion comes from the controller if it has sensors (DualSense, DualShock 4,
+///   GameSir G8+ in its DualShock 4 mode), otherwise from the phone (e.g. a Backbone).
 final class ControllerInput {
 	/// Called on the main thread with the latest pad state.
 	var onPad: ((CKPadState) -> Void)?

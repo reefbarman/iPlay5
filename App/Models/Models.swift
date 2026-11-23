@@ -249,7 +249,7 @@ struct StreamSettings: Codable, Equatable {
 	var displayMode: DisplayMode = .fit
 	var upscaling: UpscalingMode = .sharp
 	var statsMode: StatsMode = .off
-	/// Phone gyro for controllers without motion sensors (e.g. GameSir G8+)
+	/// Phone gyro for virtual controls and controllers without motion sensors (e.g. Backbone)
 	var phoneMotion: Bool = true
 	/// Gyro moves the right stick instead of going to the game as motion
 	var gyroAim: GyroAimMode = .off
