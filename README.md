@@ -1,10 +1,10 @@
-<p align="center"><img src="App/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="128" alt="iPlay5 icon"></p>
+<p align="center"><img src="App/Assets.xcassets/AppIcon.appiconset/AppIcon.png" width="128" alt="iPlay5, a PS5 Remote Play app for iPhone and iPad"></p>
 
-# iPlay5
+# iPlay5: PS5 Remote Play for iPhone and iPad
 
-PS5 Remote Play for iPhone and iPad over your local network, built on [chiaki-ng](https://github.com/streetpea/chiaki-ng)'s core. Tuned for the iPhone Duo's near-square inner screen, and works on any iPhone or iPad running iOS 17 or later.
+iPlay5 is a free, open-source PS5 Remote Play app for iPhone and iPad. Stream your PlayStation 5 over your local network (or from away with port forwarding) with DualSense haptics and adaptive triggers, gyro aiming, HDR and up to 1080p60. It's built on [chiaki-ng](https://github.com/streetpea/chiaki-ng)'s core, tuned for the iPhone Duo's near-square inner screen, and works on any iPhone or iPad running iOS 17 or later. Install it by sideloading with AltStore, SideStore or Sideloadly.
 
-<p align="center"><img src="docs/images/iphone-duo-hero.webp" width="800" alt="A PS5 game streaming to iPlay5 on the iPhone Duo with virtual controls visible"></p>
+<p align="center"><img src="docs/images/iphone-duo-hero.webp" width="800" alt="A PS5 game streaming to the iPlay5 Remote Play app on the iPhone Duo with virtual controls visible"></p>
 
 > [!IMPORTANT]
 > **Play with a physical controller or virtual controls.** Auto keeps the virtual controls out of the way when you have a supported controller connected, such as a DualSense, Xbox controller, or Backbone. Change this in Settings › Virtual controls.
