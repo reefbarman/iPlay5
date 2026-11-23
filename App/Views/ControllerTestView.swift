@@ -32,6 +32,22 @@ final class ControllerTester {
 		}
 	}
 
+	/// Rumble or haptics playing right now, for the picture to shake along
+	struct Buzz: Equatable {
+		/// Per grip, 0...1
+		var left: Float
+		var right: Float
+		/// How fast the picture shakes
+		var shakeHz: Double
+	}
+
+	/// Controller tilt for the picture, in radians
+	struct Tilt: Equatable {
+		var pitch: Double = 0
+		var roll: Double = 0
+		var yaw: Double = 0
+	}
+
 	private(set) var pad = CKPadState()
 	private(set) var controllerName: String?
 	private(set) var motionSource = "Phone gyro"
@@ -41,16 +57,41 @@ final class ControllerTester {
 	/// rad/s and g, in DualSense axes
 	private(set) var gyro = SIMD3<Float>.zero
 	private(set) var accel = SIMD3<Float>.zero
-	/// Touchpad fingers, 0...1 across and down
+	private(set) var tilt = Tilt()
+	/// The controller's own touchpad fingers, 0...1 across and down
 	private(set) var touches: [CGPoint?] = [nil, nil]
+	/// Fingers on the on-screen touch square, by slot, 0...1 across and down
+	private(set) var screenTouches: [Int: CGPoint] = [:]
+	/// A tap on the touch square, which the stream turns into a touchpad click
+	private(set) var screenClick = false
+	private(set) var buzz: Buzz?
+	private(set) var triggerPreset = TriggerPreset.off
+	private(set) var lightbar: Color?
+	private(set) var player: Int?
+
+	var touchpadClicked: Bool { isPressed(CK_BUTTON_TOUCHPAD) || screenClick }
+
+	private struct Motion {
+		var gyro = SIMD3<Float>.zero
+		var accel = SIMD3<Float>(0, 1, 0)
+		var yaw: Float = 0
+		var lastTimestamp: UInt32?
+		var scheduled = false
+	}
 
 	@ObservationIgnored private let input = ControllerInput()
-	/// Motion arrives faster than the screen updates: keep the latest and update once per hop to main
-	@ObservationIgnored private let pendingMotion = OSAllocatedUnfairLock<(SIMD3<Float>, SIMD3<Float>)?>(initialState: nil)
+	/// Motion arrives faster than the screen updates: the latest values and turning,
+	/// updated on the motion thread and read once per hop to main
+	@ObservationIgnored private let motion = OSAllocatedUnfairLock(initialState: Motion())
+	/// Tilt from gravity, smoothed, before recentring
+	@ObservationIgnored private var rawTilt = Tilt()
+	@ObservationIgnored private var tiltOrigin = Tilt()
 	@ObservationIgnored private weak var lastController: GCController?
 	@ObservationIgnored private var running = false
 	@ObservationIgnored private var hapticsTimer: Timer?
 	@ObservationIgnored private var rumbleStop: DispatchWorkItem?
+	@ObservationIgnored private var buzzEnd: DispatchWorkItem?
+	@ObservationIgnored private var screenClickEnd: DispatchWorkItem?
 
 	func isPressed(_ button: CKButton) -> Bool { pad.buttons & button.rawValue != 0 }
 
@@ -72,21 +113,23 @@ final class ControllerTester {
 				self?.touches[slot] = nil
 			}
 		}
-		input.onMotion = { [weak self] gyro, accel, _ in
+		input.onMotion = { [weak self] gyro, accel, timestamp in
 			guard let self else { return }
-			let schedule = self.pendingMotion.withLock { pending in
-				defer { pending = (gyro, accel) }
-				return pending == nil
+			let schedule = self.motion.withLock { m in
+				// Turning left and right has no gravity to measure it against: add up the
+				// gyro and let it drift back to centre over a couple of seconds
+				if let last = m.lastTimestamp {
+					let dt = min(0.1, Float(timestamp &- last) / 1_000_000)
+					m.yaw = max(-1, min(1, (m.yaw + gyro.y * dt) * exp(-dt / 2)))
+				}
+				m.lastTimestamp = timestamp
+				m.gyro = gyro
+				m.accel = accel
+				defer { m.scheduled = true }
+				return !m.scheduled
 			}
 			guard schedule else { return }
-			DispatchQueue.main.async { [weak self] in
-				guard let self, let (gyro, accel) = self.pendingMotion.withLock({ pending in
-					defer { pending = nil }
-					return pending
-				}) else { return }
-				self.gyro = gyro
-				self.accel = accel
-			}
+			DispatchQueue.main.async { [weak self] in self?.motionChanged() }
 		}
 		input.start()
 		refreshController()
@@ -96,6 +139,7 @@ final class ControllerTester {
 		guard running else { return }
 		running = false
 		stopBuzz()
+		screenClickEnd?.cancel()
 		input.stop()
 		input.onPad = nil
 		input.onTouch = nil
@@ -113,6 +157,56 @@ final class ControllerTester {
 		touches = [nil, nil]
 	}
 
+	// MARK: - Motion
+
+	private func motionChanged() {
+		let m = motion.withLock { m in
+			m.scheduled = false
+			return m
+		}
+		gyro = m.gyro
+		accel = m.accel
+		// Tipping and tilting from gravity (the reaction to it points up, +y when flat)
+		let a = SIMD3<Double>(Double(m.accel.x), Double(m.accel.y), Double(m.accel.z))
+		let target = Tilt(pitch: atan2(-a.z, a.y), roll: atan2(-a.x, (a.y * a.y + a.z * a.z).squareRoot()), yaw: 0)
+		let k = 0.3
+		rawTilt.pitch += (target.pitch - rawTilt.pitch) * k
+		rawTilt.roll += (target.roll - rawTilt.roll) * k
+		tilt = Tilt(pitch: rawTilt.pitch - tiltOrigin.pitch, roll: rawTilt.roll - tiltOrigin.roll, yaw: Double(m.yaw))
+	}
+
+	/// Treats the way the controller is held now as level
+	func recentre() {
+		tiltOrigin = rawTilt
+		motion.withLock { $0.yaw = 0 }
+		tilt = Tilt()
+	}
+
+	// MARK: - Touch square
+
+	/// Same rules as touching the stream: fingers move on the touchpad, slots 10 and 11
+	func screenTouch(_ event: ControllerInput.TouchEvent) {
+		switch event {
+		case .down(let slot, let x, let y), .move(let slot, let x, let y):
+			screenTouches[slot] = CGPoint(x: Double(x) / 1919, y: Double(y) / 1079)
+		case .up(let slot):
+			screenTouches[slot] = nil
+		}
+	}
+
+	/// A quick tap: the stream clicks the touchpad where the finger is, then lifts it
+	func screenTap(slot: Int) {
+		screenClickEnd?.cancel()
+		screenClick = true
+		let end = DispatchWorkItem { [weak self] in
+			self?.screenClick = false
+			self?.screenTouches[slot] = nil
+		}
+		screenClickEnd = end
+		// Longer than the stream's 80 ms so you can see it
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: end)
+	}
+
 	// MARK: - Feedback
 
 	/// Classic rumble for a moment: left is the heavy motor, right the light one
@@ -122,6 +216,7 @@ final class ControllerTester {
 		let stop = DispatchWorkItem { [weak self] in self?.input.feedback.rumble(left: 0, right: 0) }
 		rumbleStop = stop
 		DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: stop)
+		showBuzz(Buzz(left: Float(left) / 255, right: Float(right) / 255, shakeHz: left > 0 ? 16 : 30), seconds: 0.6)
 	}
 
 	/// DualSense-style haptics for a moment: a sine wave at `hz` in the 3 kHz PCM the console sends
@@ -144,6 +239,14 @@ final class ControllerTester {
 		}
 		RunLoop.main.add(timer, forMode: .common)
 		hapticsTimer = timer
+		showBuzz(Buzz(left: 1, right: 1, shakeHz: hz < 100 ? 13 : 32), seconds: 0.6)
+	}
+
+	private func showBuzz(_ buzz: Buzz, seconds: Double) {
+		self.buzz = buzz
+		let end = DispatchWorkItem { [weak self] in self?.buzz = nil }
+		buzzEnd = end
+		DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: end)
 	}
 
 	private func stopBuzz() {
@@ -151,18 +254,24 @@ final class ControllerTester {
 		rumbleStop = nil
 		hapticsTimer?.invalidate()
 		hapticsTimer = nil
+		buzzEnd?.cancel()
+		buzzEnd = nil
+		buzz = nil
 		input.feedback.rumble(left: 0, right: 0)
 	}
 
 	func setTriggers(_ preset: TriggerPreset) {
+		triggerPreset = preset
 		input.feedback.setTriggerEffects(left: preset.effect, right: preset.effect)
 	}
 
 	func setLightbar(red: UInt8, green: UInt8, blue: UInt8) {
+		lightbar = red == 0 && green == 0 && blue == 0 ? nil : Color(red: Double(red) / 255, green: Double(green) / 255, blue: Double(blue) / 255)
 		input.feedback.padInfo(CK_PAD_INFO_LIGHTBAR, red, green, blue)
 	}
 
 	func setPlayer(_ number: Int) {
+		player = number
 		input.feedback.padInfo(CK_PAD_INFO_PLAYER, UInt8(number), 0, 0)
 	}
 }
@@ -173,8 +282,6 @@ struct ControllerTestView: View {
 
 	@Environment(SettingsStore.self) private var store
 	@State private var tester = ControllerTester()
-	@State private var triggerPreset = ControllerTester.TriggerPreset.off
-	@State private var player = 1
 
 	private static let lightbarColors: [(name: String, r: UInt8, g: UInt8, b: UInt8)] = [
 		("Red", 255, 0, 0), ("Green", 0, 255, 0), ("Blue", 0, 0, 255),
@@ -190,24 +297,42 @@ struct ControllerTestView: View {
 
 	private var pressedText: String {
 		var names = Self.buttonNames.filter { tester.isPressed($0.0) }.map(\.1)
+		if tester.screenClick && !tester.isPressed(CK_BUTTON_TOUCHPAD) { names.append("Touchpad (tap)") }
 		if tester.pad.l2 > 0 { names.append("L2") }
 		if tester.pad.r2 > 0 { names.append("R2") }
 		return names.isEmpty ? "None" : names.joined(separator: ", ")
 	}
 
+	private var touchText: String {
+		let points = tester.touches.compactMap { $0 } + tester.screenTouches.sorted { $0.key < $1.key }.map(\.value)
+		guard !points.isEmpty else { return "None" }
+		return points.map { "\(Int(($0.x * 1919).rounded())), \(Int(($0.y * 1079).rounded()))" }.joined(separator: "  ·  ")
+	}
+
 	var body: some View {
 		Form {
 			Section {
-				ControllerDiagram(tester: tester)
-					.padding(.vertical, 8)
+				ControllerRender(tester: tester)
+					.padding(.top, 8)
+					.overlay(alignment: .topTrailing) {
+						Button("Recentre", systemImage: "scope") { tester.recentre() }
+							.labelStyle(.iconOnly)
+							.buttonStyle(.borderless)
+							.padding(4)
+					}
+				TouchSquare(
+					onTouch: { tester.screenTouch($0) },
+					onTap: { tester.screenTap(slot: $0) })
+					.listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
 				LabeledContent("Pressed", value: pressedText)
+				LabeledContent("Touchpad", value: touchText)
 				LabeledContent("Left stick", value: Self.stick(tester.pad.left_x, tester.pad.left_y))
 				LabeledContent("Right stick", value: Self.stick(tester.pad.right_x, tester.pad.right_y))
 				LabeledContent("L2 / R2", value: "\(Self.percent(tester.pad.l2)) / \(Self.percent(tester.pad.r2))")
 			} header: {
 				Text(tester.controllerName ?? "No controller")
 			} footer: {
-				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on.")
+				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on. The square works like touching the stream: drag to move a finger on the touchpad, tap to click it. The controller tilts and turns with the gyro; tap the target to make the way you're holding it level.")
 				if onActiveChange != nil {
 					Text("While this screen is open, the PS5 doesn't get anything from your controller, and the game's rumble and lights don't reach it.")
 				}
@@ -239,7 +364,7 @@ struct ControllerTestView: View {
 			}
 
 			Section {
-				Picker("Effect", selection: $triggerPreset) {
+				Picker("Effect", selection: Binding(get: { tester.triggerPreset }, set: { tester.setTriggers($0) })) {
 					ForEach(ControllerTester.TriggerPreset.allCases) { Text($0.label).tag($0) }
 				}
 			} header: {
@@ -263,7 +388,7 @@ struct ControllerTestView: View {
 						.accessibilityLabel(c.name)
 					}
 				}
-				Picker("Player", selection: $player) {
+				Picker("Player", selection: Binding(get: { tester.player ?? 0 }, set: { tester.setPlayer($0) })) {
 					ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
 				}
 				.pickerStyle(.segmented)
@@ -275,8 +400,6 @@ struct ControllerTestView: View {
 		}
 		.navigationTitle("Controller Test")
 		.navigationBarTitleDisplayMode(.inline)
-		.onChange(of: triggerPreset) { _, preset in tester.setTriggers(preset) }
-		.onChange(of: player) { _, number in tester.setPlayer(number) }
 		.onAppear {
 			onActiveChange?(true)
 			let orientation = (UIApplication.shared.connectedScenes.first as? UIWindowScene)?.interfaceOrientation
@@ -328,114 +451,145 @@ private struct AxisRow: View {
 	}
 }
 
-/// A generic PlayStation-style controller with what's pressed lit up
-private struct ControllerDiagram: View {
-	let tester: ControllerTester
-
-	private static let size = CGSize(width: 400, height: 250)
-	private static let idle = Color(.systemGray3)
-	private static let shell = Color(.systemGray5)
+/// A stand-in for the touchpad: two fingers, drag to move, quick tap to click
+private struct TouchSquare: View {
+	let onTouch: (ControllerInput.TouchEvent) -> Void
+	let onTap: (Int) -> Void
 
 	var body: some View {
-		GeometryReader { geo in
-			drawing
-				.frame(width: Self.size.width, height: Self.size.height)
-				.scaleEffect(geo.size.width / Self.size.width, anchor: .topLeading)
+		TouchSurface(onTouch: onTouch, onTap: onTap)
+			.aspectRatio(1920.0 / 1080.0, contentMode: .fit)
+			.background {
+				RoundedRectangle(cornerRadius: 14, style: .continuous)
+					.fill(Color(.tertiarySystemFill))
+					.overlay {
+						RoundedRectangle(cornerRadius: 14, style: .continuous)
+							.strokeBorder(Color(.separator), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
+					}
+					.overlay {
+						VStack(spacing: 4) {
+							Image(systemName: "hand.tap")
+							Text("Touch here like the touchpad")
+						}
+						.font(.footnote)
+						.foregroundStyle(.secondary)
+					}
+			}
+			.accessibilityLabel("Touchpad test area")
+	}
+}
+
+/// Tracks up to two fingers the way the stream's touch handling does
+private struct TouchSurface: UIViewRepresentable {
+	let onTouch: (ControllerInput.TouchEvent) -> Void
+	let onTap: (Int) -> Void
+
+	func makeUIView(context: Context) -> View {
+		let view = View()
+		view.backgroundColor = .clear
+		view.isMultipleTouchEnabled = true
+		return view
+	}
+
+	func updateUIView(_ view: View, context: Context) {
+		view.onTouch = onTouch
+		view.onTap = onTap
+	}
+
+	final class View: UIView {
+		var onTouch: ((ControllerInput.TouchEvent) -> Void)?
+		var onTap: ((Int) -> Void)?
+
+		// The stream's rules (MetalRenderer)
+		private static let tapMaxDuration: TimeInterval = 0.25
+		private static let tapMaxMovement: CGFloat = 12
+
+		private struct Tracked {
+			let slot: Int
+			let start: CGPoint
+			let time: TimeInterval
+			var moved = false
 		}
-		.aspectRatio(Self.size.width / Self.size.height, contentMode: .fit)
-		.accessibilityHidden(true)
-	}
 
-	private var pad: CKPadState { tester.pad }
+		private var tracked: [ObjectIdentifier: Tracked] = [:]
+		/// The form scrolls: hold it still while a finger is down so swipes stay on the square
+		private weak var scrollView: UIScrollView?
+		private var scrollViewDelayed = true
 
-	private var drawing: some View {
-		ZStack {
-			// Body
-			Capsule().fill(Self.shell).frame(width: 95, height: 165).rotationEffect(.degrees(18)).position(x: 95, y: 150)
-			Capsule().fill(Self.shell).frame(width: 95, height: 165).rotationEffect(.degrees(-18)).position(x: 305, y: 150)
-			RoundedRectangle(cornerRadius: 48).fill(Self.shell).frame(width: 300, height: 125).position(x: 200, y: 105)
-
-			// Shoulders
-			trigger("L2", pad.l2).position(x: 100, y: 14)
-			trigger("R2", pad.r2).position(x: 300, y: 14)
-			labelled(Capsule(), "L1", tester.isPressed(CK_BUTTON_L1)).frame(width: 70, height: 12).position(x: 100, y: 36)
-			labelled(Capsule(), "R1", tester.isPressed(CK_BUTTON_R1)).frame(width: 70, height: 12).position(x: 300, y: 36)
-
-			// Middle
-			touchpad.position(x: 200, y: 85)
-			labelled(Capsule(), "", tester.isPressed(CK_BUTTON_SHARE)).frame(width: 10, height: 18).position(x: 132, y: 66)
-			labelled(Capsule(), "", tester.isPressed(CK_BUTTON_OPTIONS)).frame(width: 10, height: 18).position(x: 268, y: 66)
-			labelled(Circle(), "PS", tester.isPressed(CK_BUTTON_PS)).frame(width: 20, height: 20).position(x: 200, y: 146)
-
-			// D-pad
-			dpad(CK_BUTTON_DPAD_UP, "chevron.up").position(x: 95, y: 78)
-			dpad(CK_BUTTON_DPAD_DOWN, "chevron.down").position(x: 95, y: 122)
-			dpad(CK_BUTTON_DPAD_LEFT, "chevron.left").position(x: 73, y: 100)
-			dpad(CK_BUTTON_DPAD_RIGHT, "chevron.right").position(x: 117, y: 100)
-
-			// Face buttons
-			face(CK_BUTTON_PYRAMID, "triangle", .green).position(x: 305, y: 76)
-			face(CK_BUTTON_MOON, "circle", .red).position(x: 329, y: 100)
-			face(CK_BUTTON_CROSS, "xmark", .blue).position(x: 305, y: 124)
-			face(CK_BUTTON_BOX, "square", .pink).position(x: 281, y: 100)
-
-			// Sticks
-			stick(x: pad.left_x, y: pad.left_y, pressed: tester.isPressed(CK_BUTTON_L3)).position(x: 150, y: 152)
-			stick(x: pad.right_x, y: pad.right_y, pressed: tester.isPressed(CK_BUTTON_R3)).position(x: 250, y: 152)
-		}
-	}
-
-	private func labelled<S: Shape>(_ shape: S, _ label: String, _ on: Bool) -> some View {
-		shape.fill(on ? Color.accentColor : Self.idle)
-			.overlay(Text(label).font(.system(size: 8, weight: .bold)).foregroundStyle(on ? .white : .secondary))
-	}
-
-	private func trigger(_ label: String, _ value: UInt8) -> some View {
-		ZStack(alignment: .bottom) {
-			Self.idle
-			Color.accentColor.frame(height: 22 * CGFloat(value) / 255)
-		}
-		.frame(width: 70, height: 22)
-		.clipShape(RoundedRectangle(cornerRadius: 6))
-		.overlay(Text(label).font(.system(size: 9, weight: .bold)).foregroundStyle(value > 128 ? .white : .secondary))
-	}
-
-	private var touchpad: some View {
-		let w: CGFloat = 110
-		let h: CGFloat = 58
-		return ZStack(alignment: .topLeading) {
-			RoundedRectangle(cornerRadius: 8).fill(tester.isPressed(CK_BUTTON_TOUCHPAD) ? Color.accentColor.opacity(0.6) : Self.idle)
-			ForEach(0..<2, id: \.self) { slot in
-				if let p = tester.touches[slot] {
-					Circle().fill(Color.orange).frame(width: 10, height: 10).position(x: p.x * w, y: p.y * h)
+		override func didMoveToWindow() {
+			super.didMoveToWindow()
+			if window != nil {
+				var view = superview
+				while let v = view, !(v is UIScrollView) { view = v.superview }
+				scrollView = view as? UIScrollView
+				if let scrollView {
+					// Touches reach the square straight away, before the form can start scrolling
+					scrollViewDelayed = scrollView.delaysContentTouches
+					scrollView.delaysContentTouches = false
 				}
+			} else {
+				scrollView?.delaysContentTouches = scrollViewDelayed
+				scrollView?.isScrollEnabled = true
 			}
 		}
-		.frame(width: w, height: h)
-	}
 
-	private func dpad(_ button: CKButton, _ symbol: String) -> some View {
-		let on = tester.isPressed(button)
-		return RoundedRectangle(cornerRadius: 4)
-			.fill(on ? Color.accentColor : Self.idle)
-			.overlay(Image(systemName: symbol).font(.system(size: 9, weight: .bold)).foregroundStyle(on ? .white : .secondary))
-			.frame(width: 22, height: 22)
-	}
+		private func holdScroll() {
+			scrollView?.isScrollEnabled = tracked.isEmpty
+		}
 
-	private func face(_ button: CKButton, _ symbol: String, _ color: Color) -> some View {
-		let on = tester.isPressed(button)
-		return Circle()
-			.fill(on ? color : Self.idle)
-			.overlay(Image(systemName: symbol).font(.system(size: 10, weight: .bold)).foregroundStyle(on ? .white : color))
-			.frame(width: 22, height: 22)
-	}
+		private func point(_ p: CGPoint) -> (UInt16, UInt16) {
+			guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
+			let nx = min(max(p.x / bounds.width, 0), 1)
+			let ny = min(max(p.y / bounds.height, 0), 1)
+			return (UInt16((nx * 1919).rounded()), UInt16((ny * 1079).rounded()))
+		}
 
-	private func stick(x: Int16, y: Int16, pressed: Bool) -> some View {
-		ZStack {
-			Circle().fill(Color(.systemGray4)).frame(width: 46, height: 46)
-			Circle().fill(pressed ? Color.accentColor : Color(.systemGray))
-				.frame(width: 28, height: 28)
-				.offset(x: CGFloat(x) / 32767 * 12, y: CGFloat(y) / 32767 * 12)
+		override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+			for touch in touches {
+				let used = Set(tracked.values.map(\.slot))
+				guard let slot = [10, 11].first(where: { !used.contains($0) }) else { continue }
+				let p = touch.location(in: self)
+				tracked[ObjectIdentifier(touch)] = Tracked(slot: slot, start: p, time: touch.timestamp)
+				let (x, y) = point(p)
+				onTouch?(.down(slot: slot, x: x, y: y))
+			}
+			holdScroll()
+		}
+
+		override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+			for touch in touches {
+				let key = ObjectIdentifier(touch)
+				guard var t = tracked[key] else { continue }
+				let p = touch.location(in: self)
+				if !t.moved, hypot(p.x - t.start.x, p.y - t.start.y) > Self.tapMaxMovement {
+					t.moved = true
+					tracked[key] = t
+				}
+				let (x, y) = point(p)
+				onTouch?(.move(slot: t.slot, x: x, y: y))
+			}
+		}
+
+		override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+			finish(touches, allowsTap: true)
+		}
+
+		override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+			finish(touches, allowsTap: false)
+		}
+
+		private func finish(_ touches: Set<UITouch>, allowsTap: Bool) {
+			for touch in touches {
+				guard let t = tracked.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
+				let p = touch.location(in: self)
+				if allowsTap, !t.moved, hypot(p.x - t.start.x, p.y - t.start.y) <= Self.tapMaxMovement,
+				   touch.timestamp - t.time <= Self.tapMaxDuration {
+					onTap?(t.slot)
+				} else {
+					onTouch?(.up(slot: t.slot))
+				}
+			}
+			holdScroll()
 		}
 	}
 }
