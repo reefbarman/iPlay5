@@ -107,6 +107,9 @@ struct StreamSettingsForm: View {
 				Toggle("Invert gyro up/down", isOn: $settings.gyroAimInvertY)
 			}
 			Toggle("Select button is touchpad click", isOn: $settings.selectIsTouchpad)
+			if HomeButtonSetting.isSupported {
+				Button("Home Button Settings") { HomeButtonSetting.openSettings() }
+			}
 			NavigationLink { ControlsGuideView() } label: {
 				Label("Controls Guide", systemImage: "gamecontroller")
 			}
@@ -114,6 +117,9 @@ struct StreamSettingsForm: View {
 			Text("Controller")
 		} footer: {
 			Text("Rumble turns all vibration on or off. Phone haptics sets how strongly the phone itself vibrates, which it does with virtual controls or a controller that has no motors (like a Backbone). Controllers with a gyro (DualSense, DualShock 4, GameSir G8+ in its iOS mode) send their own motion. Phone gyro covers virtual controls and controllers without motion sensors, like a Backbone. Gyro aiming turns the controller's motion (or the phone's, if the controller has none) into right stick movement, on top of the stick itself, and stops sending motion to the game. Tilt like a steering wheel or turn left and right to look around (Look left/right by picks which), and tip the top towards or away from you to look up and down. Up/down speed makes looking up and down faster than left and right, as most games turn slower vertically. Game dead zone is how much stick movement the game ignores: raise it until small, slow movements move the camera, and lower it if the camera creeps when you're nearly still. Fine aim boost undoes games slowing down small stick movements: raise it if small corrections feel sluggish, lower it if they overshoot. 1 turns it off. Dead zone per direction pushes left/right and up/down past the dead zone separately, so the small part of a diagonal correction isn't lost. Try it if slight up/down adjustments get ignored while moving sideways, or the other way round. Hold Select + Start for a second during a stream to open the menu.")
+			if HomeButtonSetting.isSupported {
+				Text("Home Button Settings opens the iOS setting for what your controller's Home button does in apps. Let apps use it and Home opens the PS5 menu, otherwise iOS opens its Game Overlay. Open it with your controller connected.")
+			}
 		}
 
 		Section {

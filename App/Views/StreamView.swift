@@ -40,6 +40,8 @@ struct StreamView: View {
 	@State private var pin = ""
 	@State private var phone = PhoneStatus()
 	@State private var showHeatWarning = false
+	/// iOS 27 keeps the controller's Home button unless the user lets apps have it
+	@State private var showHomeButtonPrompt = false
 	/// The corner hints show once per stream screen, not again after a reconnect
 	@State private var hintShown = false
 	/// Auto bitrate's key for this console on the Wi-Fi network the stream started on
@@ -184,6 +186,7 @@ struct StreamView: View {
 			hintShown = true
 			flashSettingsHint()
 			revealFGButton()
+			askAboutHomeButtonOnce()
 		}
 		// Rest mode worked: straight back to the console list, no Reconnect screen
 		.onChange(of: session?.state == .consoleAsleep) { _, asleep in
@@ -212,6 +215,25 @@ struct StreamView: View {
 		} message: {
 			Text(screenshotMessage ?? "")
 		}
+		.alert("Use Home as the PS button?", isPresented: $showHomeButtonPrompt) {
+			Button("Open Settings") { HomeButtonSetting.openSettings() }
+			Button("Not Now", role: .cancel) {}
+		} message: {
+			Text("iOS opens its Game Overlay when you press your controller's Home button. To open the PS5 menu instead, change the controller's Home button setting so apps can use it. You can find this again in Settings › Controller.")
+		}
+	}
+
+	private static let homeButtonPromptKey = "homeButtonPromptShown"
+
+	/// Once ever, the first time a stream starts with a controller while iOS 27
+	/// keeps the Home button for itself
+	private func askAboutHomeButtonOnce() {
+		guard hasController, !marketingScreenshotMode,
+			!UserDefaults.standard.bool(forKey: Self.homeButtonPromptKey),
+			HomeButtonSetting.blocksApps
+		else { return }
+		UserDefaults.standard.set(true, forKey: Self.homeButtonPromptKey)
+		showHomeButtonPrompt = true
 	}
 
 	private var content: some View {
