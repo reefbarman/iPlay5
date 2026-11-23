@@ -2,6 +2,16 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.12.1 (2026-11-23)
+
+Fixes gyro drift, so the camera stays put when you hold your controller still, with gyro aiming and with games' own motion controls.
+
+### Fixes
+- With gyro aiming, the camera could slowly creep even when the controller was held still, and on some controllers it drifted quite a lot. Every gyro reads a little even at rest, and that reading was being treated as movement. Now, whenever the controller is held still for a moment (resting on a table, or steady in your hands), iPlay5 measures that reading and takes it off. It keeps adjusting as the controller warms up. Games that use the controller's motion themselves get the corrected reading too.
+
+### Notes
+- After connecting a controller, hold it still for about a second before aiming so iPlay5 can measure it. Switching controllers starts the measurement over.
+
 ## v0.12.0 (2026-11-23)
 
 iPlay5 now runs as a proper iPad app, and the stream screen fits better on every iPhone, not just the iPhone Duo.
