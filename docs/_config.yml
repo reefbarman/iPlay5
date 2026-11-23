@@ -1,0 +1,75 @@
+# GitHub Pages site for iPlay5, built from this folder.
+# Every guide here is published as a page; README.md is the in-repo index and is
+# excluded because index.md is the site's home page.
+
+title: iPlay5
+description: >-
+  Free, open-source PS5 Remote Play app for iPhone and iPad. DualSense haptics,
+  gyro aiming, HDR and up to 1080p60, tuned for the iPhone Duo. Sideload with
+  AltStore or SideStore.
+url: https://reefbarman.github.io
+baseurl: /iPlay5
+lang: en
+author: reefbarman
+github_username: reefbarman
+logo: /images/app-icon.png
+
+theme: minima
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+titles_from_headings:
+  strip_title: true
+
+header_pages:
+  - consoles-and-setup.md
+  - controllers.md
+  - picture.md
+  - connection.md
+  - troubleshooting.md
+
+exclude:
+  - README.md
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      image: /images/social-preview.jpg
+  - scope:
+      path: consoles-and-setup.md
+    values:
+      description: Find and link your PS5 in iPlay5, sign in with PSN, wake it from rest mode, use per-console settings and play away from home.
+  - scope:
+      path: picture.md
+    values:
+      description: iPlay5 picture settings for PS5 Remote Play on iPhone and iPad, including resolution, bitrate, H.265, HDR, MetalFX upscaling, 120 Hz and frame generation.
+  - scope:
+      path: controllers.md
+    values:
+      description: Use a DualSense, Xbox controller or Backbone with iPlay5, with haptics, adaptive triggers, motion, gyro aiming and the Controller Test.
+  - scope:
+      path: touch-and-virtual-controls.md
+    values:
+      description: Play PS5 Remote Play on iPhone without a controller using iPlay5's touchscreen touchpad and on-screen virtual controls.
+  - scope:
+      path: connection.md
+    values:
+      description: Get a smooth PS5 Remote Play stream on iPhone with iPlay5's Auto bitrate, Optimise connection, network smoothing and reconnecting.
+  - scope:
+      path: audio.md
+    values:
+      description: Game audio, AirPods, microphone and party chat in iPlay5, the PS5 Remote Play app for iPhone and iPad.
+  - scope:
+      path: stream-screen.md
+    values:
+      description: iPlay5 stream screen shortcuts, the stream menu, phone battery and heat, typing on the phone and screenshots.
+  - scope:
+      path: iphone-duo.md
+    values:
+      description: PS5 Remote Play on the iPhone Duo with iPlay5, including inner and outer screens, folding, and controller and shim recommendations.
+  - scope:
+      path: troubleshooting.md
+    values:
+      description: Fix problems with iPlay5 PS5 Remote Play, share diagnostics, capture frames and see known limitations.

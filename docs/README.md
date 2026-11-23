@@ -1,6 +1,6 @@
 # iPlay5 feature guides
 
-Everything iPlay5 does, grouped by topic. The [main README](../README.md) has the highlights, install steps and first-run setup. The [changelog](../CHANGELOG.md) lists what changed in each release.
+Everything iPlay5 does, grouped by topic. The [main README](https://github.com/reefbarman/iPlay5#readme) has the highlights, install steps and first-run setup. The [changelog](https://github.com/reefbarman/iPlay5/blob/main/CHANGELOG.md) lists what changed in each release. These guides are also published at [reefbarman.github.io/iPlay5](https://reefbarman.github.io/iPlay5/).
 
 | Guide                                                       | What's in it                                                                                                                              |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |

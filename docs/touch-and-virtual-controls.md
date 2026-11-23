@@ -28,4 +28,4 @@ Settings › Virtual controls:
 
 Settings › Controller › Controls Guide, also in the stream menu. A diagram of the layout on a compact iPhone and on the iPhone Duo's inner screen, and a summary of the [stream shortcuts](stream-screen.md#corner-shortcuts). The dashed line marks the upper-screen touchpad, and dashed circles show example stick positions, not fixed touch targets.
 
-<p align="center"><img src="../App/Resources/VirtualControlsGuide.png" width="640" alt="Compact iPhone and Duo controls: touchpad in the upper half, floating sticks below, fixed buttons on both sides, and stream shortcuts along the bottom"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/reefbarman/iPlay5/main/App/Resources/VirtualControlsGuide.png" width="640" alt="Compact iPhone and Duo controls: touchpad in the upper half, floating sticks below, fixed buttons on both sides, and stream shortcuts along the bottom"></p>
