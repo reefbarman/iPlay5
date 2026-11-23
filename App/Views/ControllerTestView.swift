@@ -3,7 +3,6 @@ import GameController
 import os
 import simd
 import SwiftUI
-import UIKit.UIGestureRecognizerSubclass
 
 /// Reads the controller the same way a stream does, so what shows here is what
 /// the PS5 would get, and plays feedback through the same path the console's
@@ -69,18 +68,29 @@ final class ControllerTester {
 
 	var touchpadClicked: Bool { isPressed(CK_BUTTON_TOUCHPAD) || screenClick }
 
-	/// Attitude from adding up the gyro, in DualSense axes: x right, y out of the face, z towards the player.
-	/// A gyro reads slightly off zero even when still, which would turn the picture forever: while the
-	/// controller sits still that offset is measured and taken off, and the picture holds where it is.
+	/// Which way is up, seen from the controller, when it's held naturally: face tipped towards
+	/// you, about 40° from flat (DualSense axes). Recentre replaces it with how you hold yours.
+	static let defaultNaturalUp = SIMD3<Float>(0, cos(40 * .pi / 180), -sin(40 * .pi / 180))
+	private static let naturalUpKey = "ControllerTest.naturalUp"
+
+	/// Attitude from the gyro, in DualSense axes: x right, y out of the face, z towards the player.
+	/// - Gravity keeps the tilt honest (a Mahony filter).
+	/// - Turning left and right has nothing to check it against, so it eases back to facing
+	///   front over a few seconds rather than building up.
+	/// - The gyro's small reading at rest is measured while the controller sits still and taken off.
+	/// - Front-on is the natural hold (`naturalUp`), whichever way the controller faced at the start.
 	private struct Motion {
+		var naturalUp: SIMD3<Float>
 		var gyro = SIMD3<Float>.zero
 		var accel = SIMD3<Float>(0, 1, 0)
 		/// Controller to world; the world is how the controller sat at the first sample
 		var attitude = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+		/// Which way is up in that world
+		var up: SIMD3<Float>?
 		/// The attitude shown front-on
 		var level = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-		/// Seconds until the attitude now is taken as level, nil once done
-		var levelIn: Float? = 0.6
+		/// Seconds until front-on is set, nil once done
+		var levelIn: Float? = 0.5
 		/// What the gyro reads at rest
 		var bias = SIMD3<Float>.zero
 		/// Recent averages, to tell when the controller is sitting still
@@ -94,15 +104,20 @@ final class ControllerTester {
 			self.gyro = gyro
 			self.accel = accel
 			defer { lastTimestamp = timestamp }
-			guard let last = lastTimestamp else { return }
+			let g = simd_length(accel)
+			if up == nil {
+				guard g > 0.5 else { return }
+				up = accel / g
+			}
+			guard let last = lastTimestamp, let up else { return }
 			let dt = min(0.05, Float(timestamp &- last) / 1_000_000)
 			guard dt > 0 else { return }
 
-			let k = min(1, dt / 0.15)
+			let k = min(1, dt / 0.2)
 			if let mean = gyroMean {
-				let steady = simd_length(gyro - mean) < 0.03 && simd_length(accel - accelMean) < 0.03
-					// A real slow turn isn't an offset
-					&& simd_length(mean) < 0.12
+				let steady = simd_length(gyro - mean) < 0.02 && simd_length(accel - accelMean) < 0.02
+					// A slow turn isn't the resting reading
+					&& simd_length(mean - bias) < 0.05
 				stillFor = steady ? stillFor + dt : 0
 				gyroMean = mean + (gyro - mean) * k
 				accelMean += (accel - accelMean) * k
@@ -110,21 +125,58 @@ final class ControllerTester {
 				gyroMean = gyro
 				accelMean = accel
 			}
+			if stillFor > 0.5, let mean = gyroMean {
+				bias += (mean - bias) * min(1, dt / 2)
+			}
 
 			var w = gyro - bias
-			if stillFor > 0.3, let mean = gyroMean {
-				// Settle the offset onto the resting reading over about a second, and don't turn
-				bias += (mean - bias) * min(1, dt / 1)
-				w = .zero
+			if g > 0.85 && g < 1.15 {
+				w += 2 * simd_cross(accel / g, attitude.inverse.act(up))
 			}
 			let rate = simd_length(w)
 			if rate > 0 {
 				attitude = simd_normalize(attitude * simd_quatf(angle: rate * dt, axis: w / rate))
 			}
+
 			if let wait = levelIn {
 				levelIn = wait - dt > 0 ? wait - dt : nil
-				if levelIn == nil { level = attitude }
+				if levelIn == nil {
+					// Held: that's the natural hold. Resting on something: assume the usual one.
+					setLevel(natural: stillFor > 0.3 ? naturalUp : attitude.inverse.act(up))
+				}
+			} else {
+				// Ease the heading back to front-on, measured by where the right-hand side points
+				let side = SIMD3<Float>(1, 0, 0)
+				let was = level.act(side) - simd_dot(level.act(side), up) * up
+				let now = attitude.act(side) - simd_dot(attitude.act(side), up) * up
+				if simd_length(was) > 0.3, simd_length(now) > 0.3 {
+					let turned = atan2(simd_dot(simd_cross(was, now), up), simd_dot(was, now))
+					attitude = simd_normalize(simd_quatf(angle: -turned * min(1, dt / 3), axis: up) * attitude)
+				}
 			}
+		}
+
+		/// Front-on is the attitude now, tipped so that holding the controller with `natural`
+		/// pointing up shows square to the screen
+		mutating func setLevel(natural: SIMD3<Float>) {
+			guard let up else {
+				level = attitude
+				return
+			}
+			let upNow = attitude.inverse.act(up)
+			level = attitude * simd_quatf(from: simd_normalize(natural), to: upNow)
+		}
+
+		/// The way it's held now becomes the natural hold
+		mutating func recentre() -> SIMD3<Float>? {
+			levelIn = nil
+			guard let up else {
+				level = attitude
+				return nil
+			}
+			naturalUp = attitude.inverse.act(up)
+			level = attitude
+			return naturalUp
 		}
 
 		/// The turn since levelling, moved into the 3D model's axes
@@ -138,7 +190,13 @@ final class ControllerTester {
 	@ObservationIgnored private let input = ControllerInput()
 	/// Motion arrives faster than the screen updates: the latest values and turning,
 	/// updated on the motion thread and read once per hop to main
-	@ObservationIgnored private let motion = OSAllocatedUnfairLock(initialState: Motion())
+	@ObservationIgnored private let motion = OSAllocatedUnfairLock(initialState: Motion(naturalUp: ControllerTester.savedNaturalUp))
+
+	private static var savedNaturalUp: SIMD3<Float> {
+		guard let v = UserDefaults.standard.array(forKey: naturalUpKey) as? [Float], v.count == 3 else { return defaultNaturalUp }
+		let up = SIMD3(v[0], v[1], v[2])
+		return simd_length(up) > 0.5 ? simd_normalize(up) : defaultNaturalUp
+	}
 	@ObservationIgnored private weak var lastController: GCController?
 	@ObservationIgnored private var running = false
 	@ObservationIgnored private var hapticsTimer: Timer?
@@ -201,7 +259,7 @@ final class ControllerTester {
 		rumbleOn = controller?.haptics?.supportedLocalities.isEmpty == false ? "Controller" : "Phone"
 		touches = [nil, nil]
 		// A different controller (or the phone) starts over, level with however it's held
-		motion.withLock { $0 = Motion() }
+		motion.withLock { $0 = Motion(naturalUp: $0.naturalUp) }
 		orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 	}
 
@@ -217,11 +275,11 @@ final class ControllerTester {
 		orientation = m.shown
 	}
 
-	/// Shows the way the controller is held now front-on
+	/// Shows the way the controller is held now front-on, and remembers it as the natural hold
 	func recentre() {
-		motion.withLock { m in
-			m.level = m.attitude
-			m.levelIn = nil
+		let natural = motion.withLock { $0.recentre() }
+		if let natural {
+			UserDefaults.standard.set([natural.x, natural.y, natural.z], forKey: Self.naturalUpKey)
 		}
 		orientation = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
 	}
@@ -390,8 +448,8 @@ struct ControllerTestView: View {
 		GeometryReader { geo in
 			let landscape = geo.size.width > geo.size.height
 			VStack(spacing: 0) {
-				live(squareHeight: landscape ? 64 : 100)
-					.frame(height: landscape ? geo.size.height * 0.62 : min(geo.size.height * 0.55, geo.size.width / 1.5 + 120))
+				live
+					.frame(height: landscape ? geo.size.height * 0.6 : min(geo.size.height * 0.5, geo.size.width / 1.3))
 				form
 			}
 		}
@@ -409,25 +467,20 @@ struct ControllerTestView: View {
 		}
 	}
 
-	/// The 3D controller and the touch square, kept on screen above the list
-	private func live(squareHeight: CGFloat) -> some View {
-		VStack(spacing: 8) {
-			ControllerSceneView(state: sceneState)
-				.frame(maxWidth: .infinity, maxHeight: .infinity)
-				.overlay(alignment: .topTrailing) {
-					Button("Level", systemImage: "scope") { tester.recentre() }
-						.labelStyle(.iconOnly)
-						.font(.title3)
-						.padding(10)
-						.accessibilityLabel("Show the controller front-on as it's held now")
-				}
-			TouchSquare(
-				onTouch: { tester.screenTouch($0) },
-				onTap: { tester.screenTap(slot: $0) })
-				.frame(maxWidth: squareHeight * 5, maxHeight: squareHeight)
-				.padding(.horizontal, 16)
-				.padding(.bottom, 8)
-		}
+	/// The 3D controller, kept on screen above the list
+	private var live: some View {
+		ControllerSceneView(
+			state: sceneState,
+			onTouch: { tester.screenTouch($0) },
+			onTap: { tester.screenTap(slot: $0) })
+			.frame(maxWidth: .infinity, maxHeight: .infinity)
+			.overlay(alignment: .bottomTrailing) {
+				Button("Recentre", systemImage: "scope") { tester.recentre() }
+					.buttonStyle(.bordered)
+					.controlSize(.small)
+					.padding(12)
+					.accessibilityHint("Hold the controller the way you normally do, then tap to show it front-on")
+			}
 	}
 
 	private var form: some View {
@@ -441,7 +494,9 @@ struct ControllerTestView: View {
 			} header: {
 				Text(tester.controllerName ?? "No controller")
 			} footer: {
-				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on. The square under the controller works like touching the stream: drag to move a finger on the touchpad, tap to click it. The controller turns as you turn yours, starting front-on however you're holding it; tap the target to make the way you're holding it now front-on.")
+				Text("Buttons show as the PS5 sees them, mapped by position (the bottom face button is Cross). Select shows as Create, or Touchpad if Select button is touchpad click is on.")
+				Text("Touch the touchpad on screen to test touching the stream: drag to move a finger on it, tap to click it. Fingers on the controller's own touchpad show in orange.")
+				Text("The controller turns as you turn yours. Hold it the way you normally do and tap Recentre to show that front-on; it's remembered for next time.")
 				if onActiveChange != nil {
 					Text("While this screen is open, the PS5 doesn't get anything from your controller, and the game's rumble and lights don't reach it.")
 				}
@@ -578,166 +633,5 @@ private struct AxisRow: View {
 				.frame(width: 76, alignment: .trailing)
 		}
 		.font(.subheadline)
-	}
-}
-
-/// A stand-in for the touchpad: two fingers, drag to move, quick tap to click
-private struct TouchSquare: View {
-	let onTouch: (ControllerInput.TouchEvent) -> Void
-	let onTap: (Int) -> Void
-
-	var body: some View {
-		TouchSurface(onTouch: onTouch, onTap: onTap)
-			.background {
-				RoundedRectangle(cornerRadius: 14, style: .continuous)
-					.fill(Color(.tertiarySystemFill))
-					.overlay {
-						RoundedRectangle(cornerRadius: 14, style: .continuous)
-							.strokeBorder(Color(.separator), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-					}
-					.overlay {
-						VStack(spacing: 4) {
-							Image(systemName: "hand.tap")
-							Text("Touch here like the touchpad")
-						}
-						.font(.footnote)
-						.foregroundStyle(.secondary)
-					}
-			}
-			.accessibilityLabel("Touchpad test area")
-	}
-}
-
-/// Tracks up to two fingers the way the stream's touch handling does
-private struct TouchSurface: UIViewRepresentable {
-	let onTouch: (ControllerInput.TouchEvent) -> Void
-	let onTap: (Int) -> Void
-
-	func makeUIView(context: Context) -> View {
-		let view = View()
-		view.backgroundColor = .clear
-		view.isMultipleTouchEnabled = true
-		view.addGestureRecognizer(HoldGesture())
-		return view
-	}
-
-	/// Claims a finger on the square the moment it lands, so nothing else on screen
-	/// (scrolling, a sheet, swiping back) can take the drag. The view still gets the touches.
-	private final class HoldGesture: UIGestureRecognizer, UIGestureRecognizerDelegate {
-		init() {
-			super.init(target: nil, action: nil)
-			cancelsTouchesInView = false
-			delaysTouchesBegan = false
-			delaysTouchesEnded = false
-			delegate = self
-		}
-
-		private var fingers = 0
-
-		override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-			fingers += touches.count
-			state = state == .possible ? .began : .changed
-		}
-
-		override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-			state = .changed
-		}
-
-		override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-			fingers -= touches.count
-			state = fingers <= 0 ? .ended : .changed
-		}
-
-		override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
-			state = .cancelled
-		}
-
-		override func reset() {
-			super.reset()
-			fingers = 0
-		}
-
-		override func canBePrevented(by other: UIGestureRecognizer) -> Bool { false }
-		override func canPrevent(_ other: UIGestureRecognizer) -> Bool { true }
-
-		func gestureRecognizer(_ g: UIGestureRecognizer, shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
-			true
-		}
-	}
-
-	func updateUIView(_ view: View, context: Context) {
-		view.onTouch = onTouch
-		view.onTap = onTap
-	}
-
-	final class View: UIView {
-		var onTouch: ((ControllerInput.TouchEvent) -> Void)?
-		var onTap: ((Int) -> Void)?
-
-		// The stream's rules (MetalRenderer)
-		private static let tapMaxDuration: TimeInterval = 0.25
-		private static let tapMaxMovement: CGFloat = 12
-
-		private struct Tracked {
-			let slot: Int
-			let start: CGPoint
-			let time: TimeInterval
-			var moved = false
-		}
-
-		private var tracked: [ObjectIdentifier: Tracked] = [:]
-
-		private func point(_ p: CGPoint) -> (UInt16, UInt16) {
-			guard bounds.width > 0, bounds.height > 0 else { return (0, 0) }
-			let nx = min(max(p.x / bounds.width, 0), 1)
-			let ny = min(max(p.y / bounds.height, 0), 1)
-			return (UInt16((nx * 1919).rounded()), UInt16((ny * 1079).rounded()))
-		}
-
-		override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-			for touch in touches {
-				let used = Set(tracked.values.map(\.slot))
-				guard let slot = [10, 11].first(where: { !used.contains($0) }) else { continue }
-				let p = touch.location(in: self)
-				tracked[ObjectIdentifier(touch)] = Tracked(slot: slot, start: p, time: touch.timestamp)
-				let (x, y) = point(p)
-				onTouch?(.down(slot: slot, x: x, y: y))
-			}
-		}
-
-		override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-			for touch in touches {
-				let key = ObjectIdentifier(touch)
-				guard var t = tracked[key] else { continue }
-				let p = touch.location(in: self)
-				if !t.moved, hypot(p.x - t.start.x, p.y - t.start.y) > Self.tapMaxMovement {
-					t.moved = true
-					tracked[key] = t
-				}
-				let (x, y) = point(p)
-				onTouch?(.move(slot: t.slot, x: x, y: y))
-			}
-		}
-
-		override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-			finish(touches, allowsTap: true)
-		}
-
-		override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-			finish(touches, allowsTap: false)
-		}
-
-		private func finish(_ touches: Set<UITouch>, allowsTap: Bool) {
-			for touch in touches {
-				guard let t = tracked.removeValue(forKey: ObjectIdentifier(touch)) else { continue }
-				let p = touch.location(in: self)
-				if allowsTap, !t.moved, hypot(p.x - t.start.x, p.y - t.start.y) <= Self.tapMaxMovement,
-				   touch.timestamp - t.time <= Self.tapMaxDuration {
-					onTap?(t.slot)
-				} else {
-					onTouch?(.up(slot: t.slot))
-				}
-			}
-		}
 	}
 }

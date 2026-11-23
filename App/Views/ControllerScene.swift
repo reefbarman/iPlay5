@@ -23,7 +23,7 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	struct Touch {
 		var x: Float
 		var y: Float
-		/// On the phone's touch square rather than the controller's touchpad
+		/// Touching the touchpad on screen rather than the controller's own
 		var fromScreen: Bool
 	}
 
@@ -97,6 +97,8 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	private static let symbol = rgb(0.72, 0.73, 0.77)
 	private static let lightbarOff = rgb(0.55, 0.57, 0.62)
 	static let accent = rgb(0.2, 0.5, 1)
+	/// Pressed and pulled on the white parts, where a glow barely shows
+	private static let shellPressed = rgb(0.1, 0.42, 1)
 	private static let faceColours: [Control: CGColor] = [
 		.triangle: rgb(0.2, 0.85, 0.7), .circle: rgb(1, 0.3, 0.35),
 		.cross: rgb(0.4, 0.6, 1), .square: rgb(0.95, 0.45, 0.85),
@@ -104,6 +106,16 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 	private static let effectColours: [TriggerLook: CGColor] = [
 		.resistance: rgb(1, 0.55, 0.1), .weapon: rgb(1, 0.35, 0.1), .vibration: rgb(0.65, 0.3, 1),
 	]
+
+	private static func mix(_ a: CGColor, _ b: CGColor, _ t: CGFloat) -> CGColor {
+		let space = CGColorSpace(name: CGColorSpace.sRGB)!
+		guard let ca = a.converted(to: space, intent: .defaultIntent, options: nil)?.components,
+			  let cb = b.converted(to: space, intent: .defaultIntent, options: nil)?.components,
+			  ca.count >= 3, cb.count >= 3
+		else { return t < 0.5 ? a : b }
+		let t = min(max(t, 0), 1)
+		return rgb(ca[0] + (cb[0] - ca[0]) * t, ca[1] + (cb[1] - ca[1]) * t, ca[2] + (cb[2] - ca[2]) * t)
+	}
 
 	private static func material(_ colour: CGColor, roughness: CGFloat, metalness: CGFloat = 0) -> SCNMaterial {
 		let m = SCNMaterial()
@@ -198,9 +210,9 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			.ps: part(["Special"]),
 			.touchpad: part(["Touchpad"]),
 		]
-		// Sticks tip over from their base
-		for name in ["LeftThumb", "RightThumb"] {
-			let p = part([name])
+		// Sticks tip over from their base, cap and all
+		for (name, cap) in [("LeftThumb", "Joystick_Left_Ring"), ("RightThumb", "Joystick_Right_Ring")] {
+			let p = part([name, cap])
 			sticks.append(p)
 			let (lo, _) = p.nodes.first?.boundingBox ?? (SCNVector3Zero, SCNVector3Zero)
 			let base = p.nodes.first.map { $0.simdPosition + SIMD3(0, 0, Float(lo.z)) } ?? .zero
@@ -341,14 +353,24 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			for (n, rest) in zip(part.nodes, part.rest) {
 				n.simdTransform = on ? Self.translation(push) * rest : rest
 			}
-			let glow = Self.faceColours[control] ?? Self.accent
-			for m in part.materials {
-				m.emission.contents = on ? glow : CGColor(gray: 0, alpha: 1)
-				m.emission.intensity = on ? (control == .touchpad ? 0.35 : 1.4) : 0
+			switch control {
+			case .l1, .r1, .touchpad:
+				// White parts turn blue: a glow on white hardly shows
+				for m in part.materials {
+					m.diffuse.contents = on ? (control == .touchpad ? Self.mix(Self.shell, Self.shellPressed, 0.55) : Self.shellPressed) : Self.shell
+					m.emission.contents = Self.shellPressed
+					m.emission.intensity = on ? 0.5 : 0
+				}
+			default:
+				let glow = Self.faceColours[control] ?? Self.accent
+				for m in part.materials {
+					m.emission.contents = on ? glow : CGColor(gray: 0, alpha: 1)
+					m.emission.intensity = on ? 1.4 : 0
+				}
 			}
 		}
 
-		// Sticks tip towards where they're pushed, and sink when clicked
+		// Sticks tip towards where they're pushed, glowing more the further they go, and sink when clicked
 		for (i, part) in sticks.enumerated() {
 			let v = i == 0 ? s.leftStick : s.rightStick
 			let clicked = s.pressed.contains(i == 0 ? .l3 : .r3)
@@ -356,9 +378,10 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			let pivot = stickPivots[i]
 			let move = Self.translation(pivot + SIMD3(0, 0, clicked ? -0.015 : 0)) * simd_float4x4(tip) * Self.translation(-pivot)
 			for (n, rest) in zip(part.nodes, part.rest) { n.simdTransform = move * rest }
+			let pushed = min(1, simd_length(v))
 			for m in part.materials {
-				m.emission.contents = clicked ? Self.accent : CGColor(gray: 0, alpha: 1)
-				m.emission.intensity = clicked ? 1.2 : 0
+				m.emission.contents = Self.accent
+				m.emission.intensity = clicked ? 1.4 : (pushed > 0.08 ? CGFloat(0.2 + pushed * 0.7) : 0)
 			}
 		}
 
@@ -371,16 +394,18 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 			let swing = Self.translation(hinge + SIMD3(jitter, 0, 0))
 				* simd_float4x4(simd_quatf(angle: -0.45 * pull, axis: SIMD3(1, 0, 0))) * Self.translation(-hinge)
 			for (n, rest) in zip(part.nodes, part.rest) { n.simdTransform = swing * rest }
+			// White, so colour the trigger itself: bluer the further it's pulled, or the effect's colour
 			let tint = Self.effectColours[s.triggerLook]
+			let base = tint.map { Self.mix(Self.shell, $0, 0.5) } ?? Self.shell
 			for m in part.materials {
 				if pull > 0.02 {
-					m.emission.contents = Self.accent
-					m.emission.intensity = CGFloat(0.3 + pull * 0.9)
-				} else if let tint {
-					m.emission.contents = tint
-					m.emission.intensity = 0.45
+					m.diffuse.contents = Self.mix(base, Self.shellPressed, CGFloat(0.35 + pull * 0.65))
+					m.emission.contents = Self.shellPressed
+					m.emission.intensity = CGFloat(0.15 + pull * 0.4)
 				} else {
-					m.emission.intensity = 0
+					m.diffuse.contents = base
+					m.emission.contents = tint ?? Self.shellPressed
+					m.emission.intensity = tint == nil ? 0 : 0.25
 				}
 			}
 		}
@@ -435,6 +460,24 @@ final class ControllerScene: NSObject, SCNSceneRendererDelegate {
 				m.emission.intensity = 1.5
 			}
 		}
+	}
+
+	/// Where a point on screen lands on the touchpad, 0...1 across and down (outside that range
+	/// when it's off the pad), following the controller however it's turned
+	func touchpadPoint(_ point: CGPoint, in view: SCNSceneRenderer) -> SIMD2<Float>? {
+		guard let pad = touchpadGeometry else { return nil }
+		let near = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 0))
+		let far = view.unprojectPoint(SCNVector3(Float(point.x), Float(point.y), 1))
+		let a = SIMD3<Float>(pad.presentation.convertPosition(near, from: nil))
+		let b = SIMD3<Float>(pad.presentation.convertPosition(far, from: nil))
+		let (lo, hi) = pad.boundingBox
+		// The pad's top surface, as a flat plane
+		let surface = Float(hi.z)
+		guard abs(b.z - a.z) > 1e-6 else { return nil }
+		let t = (surface - a.z) / (b.z - a.z)
+		guard t > 0 else { return nil }
+		let p = a + (b - a) * t
+		return SIMD2((p.x - Float(lo.x)) / Float(hi.x - lo.x), (Float(hi.y) - p.y) / Float(hi.y - lo.y))
 	}
 
 	private func shake(_ buzz: Buzz?, time: TimeInterval) {
