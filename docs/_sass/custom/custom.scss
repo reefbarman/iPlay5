@@ -65,9 +65,13 @@
     transform: translateY(-2px);
   }
 
-  h3 {
+  // Plain text rather than a heading, because the theme adds an anchor link
+  // inside headings, which can't be nested in the card's own link.
+  .feature-title {
+    display: block;
     margin: 0 0 0.35rem;
     font-size: 1rem;
+    font-weight: 600;
     color: #ffffff;
   }
 

@@ -21,35 +21,35 @@ title: PS5 Remote Play for iPhone and iPad
 
 <div class="feature-grid">
   <a class="feature-card" href="{{ '/picture.html' | relative_url }}">
-    <h3>Sharp, low-latency picture</h3>
+    <span class="feature-title">Sharp, low-latency picture</span>
     <p>Hardware H.265/H.264 decoding at native resolution, up to 1080p60 and 200 Mbps, with HDR10, MetalFX and 120 Hz.</p>
   </a>
   <a class="feature-card" href="{{ '/controllers.html' | relative_url }}">
-    <h3>Full DualSense support</h3>
+    <span class="feature-title">Full DualSense support</span>
     <p>Touchpad, motion, haptics, adaptive triggers and the lightbar all follow the game. Xbox controllers and Backbone work too.</p>
   </a>
   <a class="feature-card" href="{{ '/controllers.html#gyro-aiming' | relative_url }}">
-    <h3>Gyro aiming</h3>
+    <span class="feature-title">Gyro aiming</span>
     <p>Turn the controller or the phone to aim, even in games without gyro support.</p>
   </a>
   <a class="feature-card" href="{{ '/touch-and-virtual-controls.html' | relative_url }}">
-    <h3>Virtual controls</h3>
+    <span class="feature-title">Virtual controls</span>
     <p>On-screen sticks and buttons when you don't have a controller, and the touchscreen works as the touchpad.</p>
   </a>
   <a class="feature-card" href="{{ '/connection.html' | relative_url }}">
-    <h3>A connection that looks after itself</h3>
+    <span class="feature-title">A connection that looks after itself</span>
     <p>Auto bitrate, one-tap Optimise connection, network smoothing and automatic reconnecting.</p>
   </a>
   <a class="feature-card" href="{{ '/audio.html' | relative_url }}">
-    <h3>Microphone</h3>
+    <span class="feature-title">Microphone</span>
     <p>Game and party chat through the phone's mic, with a mute button on the stream.</p>
   </a>
   <a class="feature-card" href="{{ '/consoles-and-setup.html#playing-away-from-home' | relative_url }}">
-    <h3>Play away from home</h3>
+    <span class="feature-title">Play away from home</span>
     <p>Connect over the internet with a remote address and port forwarding.</p>
   </a>
   <a class="feature-card" href="{{ '/iphone-duo.html' | relative_url }}">
-    <h3>Made for the iPhone Duo</h3>
+    <span class="feature-title">Made for the iPhone Duo</span>
     <p>Streams on the inner screen, sets up on the outer one, and folding pauses the stream.</p>
   </a>
 </div>
