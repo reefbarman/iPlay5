@@ -165,6 +165,9 @@ final class StreamSession {
 		let session: StreamSession
 		let id: Int
 		let decoder: VideoDecoder
+		/// Frames were skipped in the background: start a new decoder session on return.
+		/// Video thread only.
+		var resetDecoder = false
 		init(session: StreamSession, id: Int, decoder: VideoDecoder) {
 			self.session = session
 			self.id = id
@@ -267,7 +270,7 @@ final class StreamSession {
 		callbacks.on_video = { user, buf, size, lost, _ in
 			guard let user, let buf else { return true }
 			let connection = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue()
-			return connection.session.handleVideo(buf, Int(size), lost, decoder: connection.decoder)
+			return connection.session.handleVideo(buf, Int(size), lost, connection: connection)
 		}
 		callbacks.on_event = { user, type, code, message in
 			guard let user else { return }
@@ -793,15 +796,26 @@ final class StreamSession {
 
 	// MARK: - Callbacks (chiaki threads)
 
-	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32, decoder: VideoDecoder) -> Bool {
+	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32, connection: Connection) -> Bool {
 		if lost > 0 {
 			lostFrames &+= lost
 			renderer?.noteLostFrames()
 		}
 		// Background decoding fails, and each failure would ask for another keyframe.
 		// Coming back unpauses the stream, which asks for one.
-		guard !backgrounded else { return true }
-		return decoder.decode(buf, count: size)
+		guard !backgrounded else {
+			connection.resetDecoder = true
+			return true
+		}
+		if connection.resetDecoder {
+			// iOS may have torn down the hardware decoder while we were away, and the frames
+			// since then reference ones we skipped. Start clean and ask for a keyframe.
+			connection.resetDecoder = false
+			connection.decoder.invalidate()
+			log.notice("Back from the background, resetting the video decoder")
+			return false
+		}
+		return connection.decoder.decode(buf, count: size)
 	}
 
 

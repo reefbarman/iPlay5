@@ -17,6 +17,9 @@ final class VideoDecoder {
 	private var session: VTDecompressionSession?
 	private var format: CMVideoFormatDescription?
 	private var parameterSets: [Data] = []
+	/// The output callback said the session is gone. iOS can tear it down while the app is
+	/// in the background, and then every frame fails there instead of in the decode call.
+	private var sessionLost = false
 
 	// Stats, read approximately from the main thread
 	private(set) var decodedFrames: Int = 0
@@ -37,6 +40,7 @@ final class VideoDecoder {
 			VTDecompressionSessionInvalidate(session)
 		}
 		session = nil
+		sessionLost = false
 	}
 
 	/// Returns false if the frame couldn't be decoded and an IDR frame should be requested.
@@ -88,6 +92,7 @@ final class VideoDecoder {
 			guard let self else { return }
 			guard status == noErr, let imageBuffer else {
 				self.failedFrames += 1
+				if Self.isSessionLost(status) { self.sessionLost = true }
 				return
 			}
 			self.decodedFrames += 1
@@ -95,16 +100,23 @@ final class VideoDecoder {
 		}
 		lastDecodeMs = (CACurrentMediaTime() - start) * 1000
 
-		if status != noErr {
-			failedFrames += 1
-			log.error("Decode failed: \(status)")
-			if status == kVTInvalidSessionErr || status == kVTVideoDecoderMalfunctionErr {
+		if status != noErr || sessionLost {
+			if status != noErr {
+				failedFrames += 1
+				log.error("Decode failed: \(status)")
+			}
+			if sessionLost || Self.isSessionLost(status) {
 				// e.g. after the app was backgrounded: start over from the next keyframe
+				log.notice("Video decoder session lost, starting a new one")
 				invalidate()
 			}
 			return false
 		}
 		return true
+	}
+
+	private static func isSessionLost(_ status: OSStatus) -> Bool {
+		status == kVTInvalidSessionErr || status == kVTVideoDecoderMalfunctionErr
 	}
 
 	// MARK: - Setup
