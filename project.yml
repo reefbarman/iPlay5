@@ -11,6 +11,8 @@ settings:
     # Release builds override these from the git tag (scripts/package-ipa.sh)
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Git ref that Settings › About › Source code links to. Release builds use their tag
+    IPLAY5_SOURCE_REF: main
 targets:
   iPlay5:
     type: application
@@ -40,6 +42,7 @@ targets:
         CFBundleDisplayName: iPlay5
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        IPlay5SourceRef: $(IPLAY5_SOURCE_REF)
         LSRequiresIPhoneOS: true
         LSApplicationCategoryType: public.app-category.games
         UILaunchScreen: {}

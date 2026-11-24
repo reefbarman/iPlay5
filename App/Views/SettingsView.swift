@@ -609,6 +609,8 @@ struct SettingsView: View {
 				} footer: {
 					Text("The report has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. Share it before closing the app, so the logs still cover the problem.")
 				}
+
+				AboutSection()
 			}
 			.navigationTitle("Settings")
 			.navigationBarTitleDisplayMode(.inline)

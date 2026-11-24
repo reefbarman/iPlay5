@@ -92,3 +92,8 @@ defaults:
     values:
       nav_order: 9
       description: Fix problems with iPlay5 PS5 Remote Play, share diagnostics, capture frames and see known limitations.
+  - scope:
+      path: licensing.md
+    values:
+      nav_order: 10
+      description: iPlay5 is free and open source under the AGPL v3. Get the source for any version, see bundled components and their licences.

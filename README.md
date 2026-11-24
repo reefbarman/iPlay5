@@ -105,4 +105,6 @@ To build the same unsigned IPA the releases use, run `scripts/package-ipa.sh`, w
 - The experimental Takion v20 support is ported from [P5M](https://github.com/beecrepaldi-afk/P5M-mac) (AGPL-3.0), the first open-source client to work out the v20 changes.
 - Also bundled: [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0), [Opus](https://opus-codec.org) (BSD), and nanopb and jerasure through chiaki-ng.
 
-iPlay5 is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only), the same as chiaki-ng. If you distribute a modified build, you must make its source available under the same license.
+iPlay5 is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only), the same as chiaki-ng. If you distribute a modified build, you must make its source available under the same license. The app lists every bundled component and its licence under **Settings › About › Licences**, and [Licences and source code](docs/licensing.md) explains how to get the source for any version.
+
+`App/Resources/Licenses` holds the licence texts the app shows. They're copied from the submodules by `scripts/update-licenses.sh`, so run it after bumping a submodule and commit any changes.
