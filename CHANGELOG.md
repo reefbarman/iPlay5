@@ -2,6 +2,13 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.13.1 (2026-11-24)
+
+A small follow-up to v0.13.0 so the app can go through TestFlight and the App Store. Nothing changes in how the app works.
+
+### Notes
+- Behind-the-scenes fix to how the app declares controller support, needed for App Store builds. DualSense, Xbox and other controllers work exactly as before.
+
 ## v0.13.0 (2026-11-24)
 
 iPlay5 now shows its licences and source code in the app, and this is the first build heading to TestFlight and the App Store. Sideloading keeps working exactly as before.
