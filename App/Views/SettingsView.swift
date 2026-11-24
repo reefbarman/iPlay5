@@ -398,6 +398,12 @@ private struct AudioSettingsPage: View {
 				Text("Sends your voice to the PS5 for game and party chat. Tap the mic button in the bottom-left corner of the stream to mute it.")
 				Text("On the phone's speaker, echo cancellation stops your party hearing the game. With AirPods or other Bluetooth headphones the phone's mic is used, unless you're on iOS 26 with AirPods that support high-quality recording.")
 			}
+			Section {
+				Toggle("Keep playing in the background", isOn: $settings.backgroundAudio)
+			} footer: {
+				Text("The game audio keeps playing when you switch to another app, and the stream stays connected for as long as you're away. The picture and controller pause, and the microphone is muted until you come back.")
+				Text("When it's off, or another app starts playing audio, iOS only gives iPlay5 about 30 seconds before it disconnects. It reconnects when you come back.")
+			}
 		}
 		.settingsPage("Audio")
 	}

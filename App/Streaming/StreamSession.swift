@@ -75,6 +75,8 @@ final class StreamSession {
 	private static let settingsRetryDelay: Double = 5
 	/// How long to wait for the console to close the connection after a rest mode request
 	private static let sleepTimeout: Double = 5
+	/// Seconds of background time left when we start disconnecting, so it finishes before iOS's deadline
+	private static let backgroundDisconnectMargin: Double = 5
 
 	private(set) var state: State = .idle
 	private(set) var stats = StreamStats()
@@ -134,8 +136,14 @@ final class StreamSession {
 	/// Read from the video thread.
 	@ObservationIgnored private var backgrounded = false
 	@ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+	/// Watches the background time left, to disconnect cleanly before iOS's deadline
+	@ObservationIgnored private var backgroundDeadlineTimer: Timer?
 	/// We disconnected (or held off a reconnect) while in the background: connect again on return
 	@ObservationIgnored private var resumeInForeground = false
+	/// Old connections still stopping on a background thread (see `teardown(waitForShutdown:)`)
+	@ObservationIgnored private var shutdownsInFlight = 0
+	/// `start()` came while an old connection was still stopping: start once it has
+	@ObservationIgnored private var startAfterShutdown = false
 	@ObservationIgnored private var lifecycleObservers: [NSObjectProtocol] = []
 	/// How each finished connection went, for Auto bitrate (read once the screen closes)
 	@ObservationIgnored private(set) var qualityReports: [StreamQualityReport] = []
@@ -151,12 +159,16 @@ final class StreamSession {
 	/// What chiaki's callbacks point at: this session plus which connection they belong to.
 	/// Tearing a connection down makes chiaki send a "stopped" event that reaches the main
 	/// thread later, and it must not end the connection that replaced it.
+	/// Each connection has its own decoder, so one still stopping in the background never feeds
+	/// the connection that replaced it.
 	private final class Connection {
 		let session: StreamSession
 		let id: Int
-		init(session: StreamSession, id: Int) {
+		let decoder: VideoDecoder
+		init(session: StreamSession, id: Int, decoder: VideoDecoder) {
 			self.session = session
 			self.id = id
+			self.decoder = decoder
 		}
 	}
 
@@ -189,6 +201,11 @@ final class StreamSession {
 		// A reconnect that came due while the user is in another app waits for them to come back
 		if backgrounded {
 			resumeInForeground = true
+			return
+		}
+		// The console may still be holding the old connection: wait until it's closed
+		if shutdownsInFlight > 0 {
+			startAfterShutdown = true
 			return
 		}
 		guard let renderer else {
@@ -243,13 +260,14 @@ final class StreamSession {
 		withUnsafeMutableBytes(of: &config.regist_key) { _ = console.registKey.prefix(16).copyBytes(to: $0) }
 		withUnsafeMutableBytes(of: &config.rp_key) { _ = console.rpKey.prefix(16).copyBytes(to: $0) }
 
-		let ref = Unmanaged.passRetained(Connection(session: self, id: connectionID))
+		let ref = Unmanaged.passRetained(Connection(session: self, id: connectionID, decoder: decoder))
 		connectionRef = ref
 		var callbacks = CKSessionCallbacks()
 		callbacks.user = ref.toOpaque()
 		callbacks.on_video = { user, buf, size, lost, _ in
 			guard let user, let buf else { return true }
-			return Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue().session.handleVideo(buf, Int(size), lost)
+			let connection = Unmanaged<Connection>.fromOpaque(user).takeUnretainedValue()
+			return connection.session.handleVideo(buf, Int(size), lost, decoder: connection.decoder)
 		}
 		callbacks.on_event = { user, type, code, message in
 			guard let user else { return }
@@ -321,7 +339,7 @@ final class StreamSession {
 		if !controllerLent { input.start() }
 
 		audio.start(session: created, mic: settings.microphone)
-		audio.muted = paused
+		applyAudioMute()
 		micConsoleLive = nil
 		applyMicState()
 
@@ -342,6 +360,7 @@ final class StreamSession {
 		sleepWork = nil
 		goingToSleep = false
 		resumeInForeground = false
+		startAfterShutdown = false
 		teardown()
 		endBackgroundTask()
 		switch state {
@@ -358,22 +377,59 @@ final class StreamSession {
 
 	// MARK: - Background (main thread)
 
-	/// Switching apps briefly shouldn't cost the connection. iOS gives a backgrounded app
-	/// about 30 seconds: the connection stays up for that long, so coming back is instant.
-	/// If it runs out we disconnect cleanly (so the console lets go of us) and reconnect on return.
+	/// Switching apps shouldn't cost the connection. With "Keep playing in the background" the
+	/// game audio carries on and iOS keeps us running for as long as it plays. Otherwise (or if
+	/// another app takes over the audio) iOS gives up to about 30 seconds. Shortly before that
+	/// runs out we disconnect cleanly (so the console lets go of us) and reconnect on return.
 	private func enterBackground() {
 		backgrounded = true
 		releaseInput()
+		if handle != nil {
+			if settings.backgroundAudio {
+				// The mic stays muted while away: stop capturing so iOS doesn't show it recording
+				audio.setMic(false)
+				applyAudioMute()
+			} else {
+				audio.pauseOutput()
+			}
+		}
 		guard handle != nil, backgroundTask == .invalid else { return }
 		backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep the stream connected") { [weak self] in
 			self?.backgroundTimeExpired()
 		}
-		log.notice("In the background, keeping the stream connected")
+		backgroundDeadlineTimer?.invalidate()
+		backgroundDeadlineTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+			self?.checkBackgroundTime()
+		}
+		let remaining = UIApplication.shared.backgroundTimeRemaining
+		// Effectively infinite while audio keeps the app running
+		let allowed = remaining > 3600 ? "no time limit while audio plays" : "\(Int(remaining))s allowed"
+		log.notice("In the background, keeping the stream connected (\(allowed, privacy: .public))")
+	}
+
+	/// Disconnecting takes a moment, so start while there's still time to finish it
+	private func checkBackgroundTime() {
+		let remaining = UIApplication.shared.backgroundTimeRemaining
+		guard remaining < Self.backgroundDisconnectMargin else { return }
+		backgroundDeadlineTimer?.invalidate()
+		backgroundDeadlineTimer = nil
+		log.notice("Background time nearly up, disconnecting until the app returns")
+		disconnectForBackground()
+		// The background task ends once the old connection has closed (shutdownFinished)
+		if shutdownsInFlight == 0 { endBackgroundTask() }
 	}
 
 	private func enterForeground() {
 		backgrounded = false
+		backgroundDeadlineTimer?.invalidate()
+		backgroundDeadlineTimer = nil
 		endBackgroundTask()
+		if handle != nil {
+			audio.resumeOutput()
+			audio.setMic(settings.microphone)
+			applyAudioMute()
+			applyMicState()
+		}
 		if resumeInForeground {
 			resumeInForeground = false
 			log.notice("Back from the background, reconnecting")
@@ -382,22 +438,44 @@ final class StreamSession {
 		// Otherwise the connection is still up: unpausing (from the view) asks for a fresh keyframe
 	}
 
+	/// iOS's deadline: it kills an app that doesn't end its background task within a few
+	/// seconds, so hand the time back straight away and let any shutdown finish on another thread.
 	private func backgroundTimeExpired() {
-		if handle != nil, !goingToSleep {
+		backgroundDeadlineTimer?.invalidate()
+		backgroundDeadlineTimer = nil
+		if handle != nil {
 			log.notice("Background time ran out, disconnecting until the app returns")
-			let wasPlaying: Bool
-			switch state {
-			case .streaming, .reconnecting: wasPlaying = true
-			default: wasPlaying = false
-			}
-			teardown()
-			resumeInForeground = true
-			if wasPlaying {
-				reconnectAttempt = 1
-				state = .reconnecting(attempt: 1)
-			}
+			disconnectForBackground()
 		}
 		endBackgroundTask()
+	}
+
+	/// Drops the connection without blocking the main thread, and reconnects on return
+	private func disconnectForBackground() {
+		guard handle != nil, !goingToSleep else { return }
+		let wasPlaying: Bool
+		switch state {
+		case .streaming, .reconnecting: wasPlaying = true
+		default: wasPlaying = false
+		}
+		teardown(waitForShutdown: false)
+		resumeInForeground = true
+		if wasPlaying {
+			reconnectAttempt = 1
+			state = .reconnecting(attempt: 1)
+		}
+	}
+
+	/// An old connection finished stopping on its background thread
+	private func shutdownFinished() {
+		shutdownsInFlight -= 1
+		guard shutdownsInFlight == 0 else { return }
+		if backgrounded {
+			endBackgroundTask()
+		} else if startAfterShutdown {
+			startAfterShutdown = false
+			start()
+		}
 	}
 
 	private func endBackgroundTask() {
@@ -542,7 +620,7 @@ final class StreamSession {
 		guard paused != self.paused else { return }
 		self.paused = paused
 		renderer?.setPaused(paused)
-		audio.muted = paused
+		applyAudioMute()
 		applyMicState()
 		if !paused, let handle {
 			// We dropped frames while paused, so get a clean keyframe
@@ -594,6 +672,11 @@ final class StreamSession {
 	func toggleMicMuted() {
 		micMuted.toggle()
 		applyMicState()
+	}
+
+	/// Paused streams are silent, except in another app with "Keep playing in the background" on
+	private func applyAudioMute() {
+		audio.muted = paused && !(backgrounded && settings.backgroundAudio)
 	}
 
 	/// Sends mic audio while streaming, unmuted and not paused, and tells the console to match
@@ -661,7 +744,9 @@ final class StreamSession {
 		keyboardText = nil
 	}
 
-	private func teardown() {
+	/// With `waitForShutdown` false, chiaki stops on a background thread instead of blocking
+	/// the main thread until its threads finish. `start()` waits for that to complete.
+	private func teardown(waitForShutdown: Bool = true) {
 		finishQualityReport()
 		statsTimer?.invalidate()
 		statsTimer = nil
@@ -676,29 +761,46 @@ final class StreamSession {
 		audio.stop()
 		micActive = false
 		micConsoleLive = nil
-		if let handle {
-			// Stops and joins chiaki's threads: no callbacks after this
-			ck_session_destroy(handle)
-		}
-		handle = nil
-		decoder?.invalidate()
-		decoder = nil
-		connectionRef?.release()
+		let handle = self.handle, decoder = self.decoder, ref = connectionRef
+		self.handle = nil
+		self.decoder = nil
 		connectionRef = nil
 		connectionID &+= 1
 		UIApplication.shared.isIdleTimerDisabled = false
+		guard let handle else {
+			decoder?.invalidate()
+			ref?.release()
+			return
+		}
+		if waitForShutdown {
+			// Stops and joins chiaki's threads: no callbacks after this
+			ck_session_destroy(handle)
+			decoder?.invalidate()
+			ref?.release()
+			return
+		}
+		shutdownsInFlight += 1
+		DispatchQueue.global(qos: .userInitiated).async {
+			ck_session_destroy(handle)
+			decoder?.invalidate()
+			// Callbacks hold the session through `ref`, so release it on the main thread
+			DispatchQueue.main.async {
+				self.shutdownFinished()
+				ref?.release()
+			}
+		}
 	}
 
 	// MARK: - Callbacks (chiaki threads)
 
-	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32) -> Bool {
+	private func handleVideo(_ buf: UnsafePointer<UInt8>, _ size: Int, _ lost: Int32, decoder: VideoDecoder) -> Bool {
 		if lost > 0 {
 			lostFrames &+= lost
 			renderer?.noteLostFrames()
 		}
 		// Background decoding fails, and each failure would ask for another keyframe.
 		// Coming back unpauses the stream, which asks for one.
-		guard let decoder, !backgrounded else { return true }
+		guard !backgrounded else { return true }
 		return decoder.decode(buf, count: size)
 	}
 

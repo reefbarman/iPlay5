@@ -271,6 +271,9 @@ struct StreamSettings: Codable, Equatable {
 	var phoneHaptics: PhoneHaptics = .full
 	/// Send the phone's mic to the console for game and party chat
 	var microphone: Bool = false
+	/// Keep the game audio playing in another app. iOS keeps the app running while it plays,
+	/// so the connection stays up instead of dropping after the ~30 s background allowance.
+	var backgroundAudio: Bool = true
 	/// Use the controller's Select/View button as the DualSense touchpad click
 	var selectIsTouchpad: Bool = false
 	var virtualControls: VirtualControlsMode = .auto
@@ -362,6 +365,7 @@ struct StreamSettings: Codable, Equatable {
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		phoneHaptics = (try? c.decodeIfPresent(PhoneHaptics.self, forKey: .phoneHaptics)) ?? d.phoneHaptics
 		microphone = try c.decodeIfPresent(Bool.self, forKey: .microphone) ?? d.microphone
+		backgroundAudio = try c.decodeIfPresent(Bool.self, forKey: .backgroundAudio) ?? d.backgroundAudio
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
 		virtualControls = (try? c.decodeIfPresent(VirtualControlsMode.self, forKey: .virtualControls)) ?? d.virtualControls
 		controlsSize = (try? c.decodeIfPresent(ControlsSize.self, forKey: .controlsSize)) ?? d.controlsSize

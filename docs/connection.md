@@ -48,4 +48,7 @@ Offers the PS5 the newer stream protocol that recent official apps use. The cons
 
 ## Switching apps
 
-The stream stays connected while you briefly check another app. The picture and controller input pause while you're away. If iOS ends the app's background time, iPlay5 disconnects cleanly and reconnects when you come back, instead of showing a frozen picture.
+The stream stays connected while you're in another app. The picture and controller input pause while you're away.
+
+- With **Settings › Audio › Keep playing in the background** on (the default), the game audio keeps playing and the stream stays connected for as long as you're away. See [Audio](audio.md#keep-playing-in-the-background).
+- With it off, or if another app starts playing audio, iOS gives iPlay5 about 30 seconds (sometimes less). Just before that runs out, iPlay5 disconnects cleanly and reconnects when you come back, instead of showing a frozen picture.
