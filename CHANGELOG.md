@@ -2,6 +2,13 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.1 (2026-11-25)
+
+Fixes the picture not coming back after you switch to another app and return to your stream.
+
+### Fixes
+- After switching to another app and coming back, the stream could stay connected but every frame failed, so the picture never recovered. Now iPlay5 restarts its video decoding when you return and asks the PS5 for a fresh picture, so the stream comes back within about a second.
+
 ## v0.14.0 (2026-11-24)
 
 Switch to another app mid-game without losing your stream. The game audio keeps playing while you're away, so you can check a guide in Safari or lock your phone and pick up right where you left off.
