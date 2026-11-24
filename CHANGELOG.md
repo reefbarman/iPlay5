@@ -2,6 +2,19 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.0 (2026-11-24)
+
+Switch to another app mid-game without losing your stream. The game audio keeps playing while you're away, so you can check a guide in Safari or lock your phone and pick up right where you left off.
+
+### New
+- **Settings › Audio › Keep playing in the background:** on by default. The game audio keeps playing when you switch apps or lock the phone, and the stream stays connected for as long as you're away. The picture and controller pause, and the microphone is muted until you come back. Turn it off if you'd rather the game go quiet when you leave.
+
+### Fixes
+- Leaving the app for more than about 30 seconds could close iPlay5 completely, so you came back to the console list instead of your stream. Now iPlay5 disconnects cleanly just before iOS's time limit and reconnects when you return.
+
+### Notes
+- If another app starts playing audio (a video guide, for example), iOS takes over the sound and iPlay5 gets the usual 30 seconds or so before it disconnects. It reconnects when you come back.
+
 ## v0.13.1 (2026-11-24)
 
 A small follow-up to v0.13.0 so the app can go through TestFlight and the App Store. Nothing changes in how the app works.
