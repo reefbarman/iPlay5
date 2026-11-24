@@ -36,7 +36,7 @@ Settings › Display.
   - MetalFX options only appear on devices that support them, and work in SDR and HDR, Fit and Zoom.
 - **120 Hz screen** (on by default, ProMotion iPhones only): keeps the display at 120 Hz while streaming, so each frame waits at most about 8 ms for the next refresh instead of about 17 ms. Costs a little battery.
 
-## Frame generation (experimental)
+## Frame generation
 
 Settings › Display › Frame generation, or the **FG** button in the bottom-right corner of the stream (tap the corner to reveal it, tap again to toggle). Off by default.
 

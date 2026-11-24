@@ -14,5 +14,6 @@ Everything iPlay5 does, grouped by topic. The [main README](https://github.com/r
 | [iPhone Duo](iphone-duo.md)                                 | Inner and outer screens, folding, controller and shim recommendations                                                                     |
 | [Help and troubleshooting](troubleshooting.md)              | Share diagnostics, frame capture, known limitations                                                                                       |
 | [Licences and source code](licensing.md)                    | What the AGPL means for you, Settings › About, getting the source for a version, bundled components                                       |
+| [Privacy policy](privacy.md)                                | What iPlay5 keeps on your device, who it talks to, permissions and diagnostics                                                            |
 
 Settings paths in these guides look like **Settings › Display**. Open Settings from the gear on the console list, or during a stream from the top-right corner or by holding **Select + Start**. Most settings are also in the stream menu, so you can change them while you play.

@@ -18,6 +18,7 @@ Open **Settings › About**:
 - **Version** shows the version and build number.
 - **Source code** opens the source on GitHub for the exact version you have installed. Release builds link to their tag (for example `v0.12.1`). Builds you make yourself link to `main`.
 - **Licences** lists everything bundled into iPlay5. Tap one to read its copyright notice and full licence text.
+- **Privacy policy** opens the [privacy policy](privacy.md).
 
 ## Getting the source for a version
 

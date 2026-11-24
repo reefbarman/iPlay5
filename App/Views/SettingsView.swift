@@ -194,7 +194,7 @@ private struct DisplaySettingsPage: View {
 				if UIScreen.main.maximumFramesPerSecond > 60 {
 					Toggle("120 Hz screen", isOn: $settings.highRefreshDisplay)
 				}
-				Toggle("Frame generation (experimental)", isOn: $settings.frameGeneration)
+				Toggle("Frame generation", isOn: $settings.frameGeneration)
 			} header: {
 				Text("Smoothness")
 			} footer: {
@@ -485,7 +485,7 @@ struct NetworkSettingsSections: View {
 		}
 
 		Section {
-			Toggle("Takion v20 protocol (experimental)", isOn: $settings.takionV20)
+			Toggle("Takion v20 protocol", isOn: $settings.takionV20)
 		} footer: {
 			Text("Offers the PS5 the newer stream protocol that recent official apps use. The PS5 decides; if it doesn't answer, the stream stays on the usual protocol. There's no measured latency gain yet, so compare with it off. The stats overlay shows which one is in use. Changing this reconnects the stream.")
 		}

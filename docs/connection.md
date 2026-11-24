@@ -33,7 +33,7 @@ Settings › Network. Off by default. For Wi-Fi that stutters.
 
 Advanced stats show what it's doing. Changing it reconnects the stream.
 
-## Takion v20 (experimental)
+## Takion v20
 
 Settings › Network. Off by default.
 

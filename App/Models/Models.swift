@@ -281,11 +281,11 @@ struct StreamSettings: Codable, Equatable {
 	var fixedSticks: Bool = false
 	/// Keep a ProMotion screen at 120 Hz while streaming, so frames wait less for the next refresh
 	var highRefreshDisplay: Bool = true
-	/// Experimental: make an in-between frame for each pair of real ones (FrameGen.metal)
+	/// Make an in-between frame for each pair of real ones (FrameGen.metal)
 	var frameGeneration: Bool = false
 	/// Debug: a button on the stream that saves the last few seconds of frames
 	var frameCapture: Bool = false
-	/// Experimental: offer the PS5 the newer Takion v20 stream protocol. The console picks;
+	/// Offer the PS5 the newer Takion v20 stream protocol. The console picks;
 	/// it stays on v12 if it doesn't answer. Off keeps the stock chiaki-ng v12 path.
 	var takionV20: Bool = false
 	/// Optional: ride out network hitches at the cost of a little delay while they happen.

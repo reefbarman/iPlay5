@@ -20,7 +20,7 @@ Not affiliated with or endorsed by Sony Interactive Entertainment. "PlayStation"
 The highlights are below. The [feature guides](docs/README.md) cover everything in detail, and the [changelog](CHANGELOG.md) lists what changed in each release.
 
 - **Sharp, low-latency picture:** hardware H.265/H.264 decoding drawn with Metal at the screen's native resolution, up to 1080p60 (the PS5's Remote Play limit) and up to 200 Mbps. HDR10, Fit or Zoom to fill, Sharp or MetalFX upscaling, and a 120 Hz screen on ProMotion iPhones. [Picture](docs/picture.md)
-- **Frame generation (experimental):** an in-between frame for each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. [Picture](docs/picture.md#frame-generation-experimental)
+- **Frame generation:** an in-between frame for each pair the PS5 sends, so 30 fps looks like 60 and 60 like 120, for half a frame of extra delay. [Picture](docs/picture.md#frame-generation)
 - **Full DualSense support:** touchpad, motion, haptics with the game's texture, adaptive triggers and the lightbar all follow the game. Xbox trigger motors play trigger effects, and controllers without motors get haptics on the phone instead. [Controllers](docs/controllers.md)
 - **Gyro aiming:** turn the controller (or the phone) to aim with the right stick, even in games without gyro support, always or only while holding L2 or R1. [Controllers](docs/controllers.md#gyro-aiming)
 - **Controller Test:** a 3D DualSense that mirrors your controller live, with buttons to try rumble, haptics, trigger effects and lights. [Controllers](docs/controllers.md#controller-test)
@@ -102,9 +102,11 @@ To build the same unsigned IPA the releases use, run `scripts/package-ipa.sh`, w
 ## Credits and license
 
 - [chiaki-ng](https://github.com/streetpea/chiaki-ng) and the original [Chiaki](https://git.sr.ht/~thestr4ng3r/chiaki) did the hard work of the Remote Play protocol. PSN sign-in follows chiaki-ng's flow.
-- The experimental Takion v20 support is ported from [P5M](https://github.com/beecrepaldi-afk/P5M-mac) (AGPL-3.0), the first open-source client to work out the v20 changes.
+- The Takion v20 support is ported from [P5M](https://github.com/beecrepaldi-afk/P5M-mac) (AGPL-3.0), the first open-source client to work out the v20 changes.
 - Also bundled: [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) (Apache-2.0), [Opus](https://opus-codec.org) (BSD), and nanopb and jerasure through chiaki-ng.
 
 iPlay5 is licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only), the same as chiaki-ng. If you distribute a modified build, you must make its source available under the same license. The app lists every bundled component and its licence under **Settings › About › Licences**, and [Licences and source code](docs/licensing.md) explains how to get the source for any version.
+
+iPlay5 collects no data. It has no accounts, analytics or ads, and only talks to your PS5 and Sony's sign-in page. See the [privacy policy](docs/privacy.md).
 
 `App/Resources/Licenses` holds the licence texts the app shows. They're copied from the submodules by `scripts/update-licenses.sh`, so run it after bumping a submodule and commit any changes.

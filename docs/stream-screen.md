@@ -8,7 +8,7 @@ The stream keeps the screen clear. Hidden shortcuts sit in the corners, and hint
 | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Top-left corner     | Tap to reveal the PS button, then tap it to press PS                                                                                            |
 | Top-right corner    | Tap to reveal the gear, then tap it to open the stream menu                                                                                     |
-| Bottom-right corner | Tap to reveal **FG**, tap again to turn [frame generation](picture.md#frame-generation-experimental) on or off                                  |
+| Bottom-right corner | Tap to reveal **FG**, tap again to turn [frame generation](picture.md#frame-generation) on or off                                               |
 | Bottom-left corner  | Mic mute button when the [microphone](audio.md#microphone) is on, and the frame capture button when [enabled](troubleshooting.md#frame-capture) |
 
 With a controller, holding **Select + Start** for a second also opens the menu. With [virtual controls](touch-and-virtual-controls.md#virtual-controls), Create and Options sit in the black bar below the picture.

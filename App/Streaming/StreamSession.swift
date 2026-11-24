@@ -13,7 +13,7 @@ struct StreamStats: Equatable {
 	var rttMs: Double = 0
 	/// Packets lost recently, 0...1
 	var packetLoss: Double = 0
-	/// Takion protocol version in use (12, or 20 with the experimental mode), 0 if unknown
+	/// Takion protocol version in use (12, or 20 when Takion v20 is on and the PS5 accepts), 0 if unknown
 	var takionVersion = 0
 	var failedFrames = 0
 	var lostFrames = 0

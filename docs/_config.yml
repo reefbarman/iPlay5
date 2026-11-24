@@ -97,3 +97,8 @@ defaults:
     values:
       nav_order: 10
       description: iPlay5 is free and open source under the AGPL v3. Get the source for any version, see bundled components and their licences.
+  - scope:
+      path: privacy.md
+    values:
+      nav_order: 11
+      description: iPlay5's privacy policy. It collects no data, has no accounts, analytics or ads, and only talks to your PS5 and Sony's sign-in page.

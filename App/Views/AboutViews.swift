@@ -12,6 +12,8 @@ enum AppInfo {
 	}
 
 	static let repository = URL(string: "https://github.com/reefbarman/iPlay5")!
+	/// docs/privacy.md on the GitHub Pages site
+	static let privacyPolicy = URL(string: "https://reefbarman.github.io/iPlay5/privacy.html")!
 
 	static var sourceURL: URL {
 		let ref = (info?["IPlay5SourceRef"] as? String).flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 } ?? "main"
@@ -75,6 +77,9 @@ struct AboutSection: View {
 			}
 			NavigationLink { LicensesView() } label: {
 				Label("Licences", systemImage: "doc.text")
+			}
+			Link(destination: AppInfo.privacyPolicy) {
+				Label("Privacy policy", systemImage: "hand.raised")
 			}
 		} header: {
 			Text("About")

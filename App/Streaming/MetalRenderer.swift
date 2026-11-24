@@ -79,7 +79,7 @@ final class MetalRenderer {
 	}
 	private var screenshotFrame: ScreenshotFrame?
 
-	// Frame generation (experimental)
+	// Frame generation
 	private var frameGeneration = false
 	private var frameInterval: CFTimeInterval = 1.0 / 60
 	/// Video thread only
