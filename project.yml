@@ -70,6 +70,6 @@ targets:
         # Debug frame captures show up in Files and Finder
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # DualSense is an ExtendedGamepad. App Store Connect rejects any other profile name here
         GCSupportedGameControllers:
           - ProfileName: ExtendedGamepad
-          - ProfileName: DualSense
