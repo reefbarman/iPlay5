@@ -44,6 +44,9 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         IPlay5SourceRef: $(IPLAY5_SOURCE_REF)
         LSRequiresIPhoneOS: true
+        # App Store Connect's export compliance answers (standard algorithms via Mbed TLS,
+        # not distributed in France) need no documentation, so uploads skip the questions
+        ITSAppUsesNonExemptEncryption: false
         LSApplicationCategoryType: public.app-category.games
         UILaunchScreen: {}
         UIApplicationSceneManifest:
