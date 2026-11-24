@@ -2,6 +2,19 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.13.0 (2026-11-24)
+
+iPlay5 now shows its licences and source code in the app, and this is the first build heading to TestFlight and the App Store. Sideloading keeps working exactly as before.
+
+### New
+- **Settings › About:** shows the app's version and build, with links to the **Source code** for the exact release you have installed, the **Licences** for iPlay5 and every component it bundles (each opens the full licence text), and the **Privacy policy**.
+- **Privacy policy:** iPlay5 collects nothing, and the policy is now published at https://reefbarman.github.io/iPlay5/privacy.html.
+
+### Notes
+- **Frame generation** and **Takion v20 protocol** are no longer labelled experimental. They work the same as before.
+- The PSN sign-in button is now called **Sign in to PSN**, and its Safari option is **Open PSN sign-in in Safari**.
+- iPlay5 is coming to TestFlight and the App Store. Copies installed from different places don't share settings, so a store copy needs its consoles linked again.
+
 ## v0.12.1 (2026-11-23)
 
 Fixes gyro drift, so the camera stays put when you hold your controller still, with gyro aiming and with games' own motion controls.
