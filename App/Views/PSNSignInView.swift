@@ -62,7 +62,7 @@ struct PSNSignInView: View {
 				Button {
 					openURL(PSNAuth.loginURL)
 				} label: {
-					Label("Open PlayStation sign-in in Safari", systemImage: "safari")
+					Label("Open PSN sign-in in Safari", systemImage: "safari")
 				}
 			} footer: {
 				Text("Sign in with your passkey or password manager as usual. You'll end up on a blank or error page on remoteplay.dl.playstation.net. That's expected: tap the address bar, copy the whole URL and come back here.")

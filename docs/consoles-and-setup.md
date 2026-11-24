@@ -14,7 +14,7 @@ Put the phone and PS5 on the same network. Allow **Local Network** access when i
 Tap **+** on the console list.
 
 1. **Console:** iPlay5 looks for PS5s on your Wi-Fi and lists them. It searches each address on your subnet directly, so it doesn't need Apple's multicast permission. If yours doesn't appear, use **Enter IP address manually**.
-2. **PSN account:** tap **Sign in with PlayStation** to fill in your account ID. Signing in only looks up the ID the PS5 needs for linking. Your password and login aren't stored.
+2. **PSN account:** tap **Sign in to PSN** to fill in your account ID. Signing in only looks up the ID the PS5 needs for linking. Your password and login aren't stored.
    - If your passkey or password manager doesn't work in the sign-in window, use **Passkey or password manager not working? Use Safari**. Sign in there, copy the URL of the blank or error page you land on, and paste it back into iPlay5. The code in that URL only works once and expires after a few minutes.
 3. **Link code:** on the PS5, open **Settings › System › Remote Play › Link Device** and enter the PIN it shows. Tap **Link**.
 

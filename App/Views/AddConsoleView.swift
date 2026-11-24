@@ -139,7 +139,7 @@ struct AddConsoleView: View {
 				Button {
 					showingSignIn = true
 				} label: {
-					Label("Sign in with PlayStation", systemImage: "person.crop.circle")
+					Label("Sign in to PSN", systemImage: "person.crop.circle")
 				}
 				TextField("Or paste it, e.g. AbCdEfGhIjk=", text: $accountID)
 					.textInputAutocapitalization(.never)

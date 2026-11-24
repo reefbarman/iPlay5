@@ -51,7 +51,7 @@ https://raw.githubusercontent.com/reefbarman/iPlay5/main/altstore-source.json
 1. Put the PS5 and phone on the same network. On the PS5, enable **Settings › System › Remote Play › Enable Remote Play**. To wake it from rest mode, also turn on **Settings › System › Power Saving › Features Available in Rest Mode › Stay Connected to the Internet** and **Enable Turning On PS5 from Network**.
 2. Open iPlay5 and allow **Local Network** access when asked. Tap **+**.
 3. Your PS5 should appear under Console. If it doesn't, use **Enter IP address manually**.
-4. Tap **Sign in with PlayStation** to fill in your account ID. If your passkey or password manager doesn't work in the sign-in window, use the **Safari** option and paste the URL you end up on.
+4. Tap **Sign in to PSN** to fill in your account ID. If your passkey or password manager doesn't work in the sign-in window, use the **Safari** option and paste the URL you end up on.
 5. On the PS5, open **Settings › System › Remote Play › Link Device**, enter the PIN in the app and tap **Link**.
 6. Tap **Play**. If you don't have a controller connected, choose **Use virtual controls**, **Connect without controls**, or **Cancel**. Tap the picture to click the PS5 touchpad, or slide your finger to swipe. With virtual controls showing, the touchpad is the upper half, and you start a stick in the open space on either side of the lower half.
 

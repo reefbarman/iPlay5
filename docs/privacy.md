@@ -12,7 +12,7 @@ This policy covers iPlay5 however you installed it: from the App Store, TestFlig
 ## Who iPlay5 talks to
 
 - **Your PS5:** the stream, your controller input and (if you turn on **Microphone**) your voice go directly between your device and your console, over your local network or the remote address you give it.
-- **Sony's sign-in service:** when you tap **Sign in with PlayStation** while linking a console, you sign in on Sony's own page so iPlay5 can look up the PSN account ID that Remote Play linking needs. iPlay5 keeps the account ID and doesn't keep your password or sign-in token. Sony's [privacy policy](https://www.playstation.com/legal/privacy-policy/) covers that sign-in.
+- **Sony's sign-in service:** when you tap **Sign in to PSN** while linking a console, you sign in on Sony's own page so iPlay5 can look up the PSN account ID that Remote Play linking needs. iPlay5 keeps the account ID and doesn't keep your password or sign-in token. Sony's [privacy policy](https://www.playstation.com/legal/privacy-policy/) covers that sign-in.
 
 Nothing is sent anywhere else.
 
