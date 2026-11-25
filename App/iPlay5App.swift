@@ -3,8 +3,8 @@ import SwiftUI
 import os
 
 let logSubsystem = Bundle.main.bundleIdentifier ?? "iplay5"
-let log = Logger(subsystem: logSubsystem, category: "app")
-let chiakiLog = Logger(subsystem: logSubsystem, category: "chiaki")
+let log = AppLog(subsystem: logSubsystem, category: "app")
+let chiakiLog = AppLog(subsystem: logSubsystem, category: "chiaki")
 
 @main
 struct iPlay5App: App {
