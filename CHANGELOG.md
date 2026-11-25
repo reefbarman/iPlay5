@@ -2,6 +2,14 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.2 (2026-11-25)
+
+Properly fixes the picture not coming back after you switch to another app and return to your stream, and makes shared diagnostics readable again.
+
+### Fixes
+- After switching to another app and coming back, the picture could still stay broken on some phones, with every frame failing. Now, whenever video decoding gets stuck, iPlay5 waits for a fresh full picture from the PS5 and keeps asking for one until it arrives, so the stream recovers within about a second.
+- Diagnostics shared from TestFlight and App Store builds showed every log line as "<compose failure>". The log in a diagnostics report is now readable in every build.
+
 ## v0.14.1 (2026-11-25)
 
 Fixes the picture not coming back after you switch to another app and return to your stream.
