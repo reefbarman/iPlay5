@@ -168,6 +168,9 @@ final class StreamSession {
 		/// Frames were skipped in the background: start a new decoder session on return.
 		/// Video thread only.
 		var resetDecoder = false
+		/// Set before the session starts, so the video thread can ask for keyframes.
+		/// Valid until ck_session_destroy, which joins the video thread first.
+		var handle: OpaquePointer?
 		init(session: StreamSession, id: Int, decoder: VideoDecoder) {
 			self.session = session
 			self.id = id
@@ -323,6 +326,7 @@ final class StreamSession {
 			return
 		}
 		handle = created
+		ref.takeUnretainedValue().handle = created
 
 		input.selectIsTouchpad = settings.selectIsTouchpad
 		input.phoneMotionEnabled = settings.phoneMotion
@@ -807,15 +811,22 @@ final class StreamSession {
 			connection.resetDecoder = true
 			return true
 		}
+		let decoder = connection.decoder
 		if connection.resetDecoder {
 			// iOS may have torn down the hardware decoder while we were away, and the frames
-			// since then reference ones we skipped. Start clean and ask for a keyframe.
+			// since then reference ones we skipped. Start clean from a keyframe.
 			connection.resetDecoder = false
-			connection.decoder.invalidate()
+			decoder.reset()
 			log.notice("Back from the background, resetting the video decoder")
-			return false
 		}
-		return connection.decoder.decode(buf, count: size)
+		let ok = decoder.decode(buf, count: size)
+		// Telling chiaki a frame failed only reports it as corrupt, which doesn't get a
+		// keyframe, so ask for one directly until it arrives
+		if decoder.keyframeRequestDue(), let handle = connection.handle {
+			let err = ck_session_request_idr(handle)
+			if err != 0 { log.error("Keyframe request failed (error \(err))") }
+		}
+		return ok
 	}
 
 
