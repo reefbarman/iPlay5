@@ -2,6 +2,18 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.4 (2026-11-25)
+
+Fixes controls freezing for a few seconds mid-game while the picture and sound keep going, and makes it easier to share diagnostics from inside a stream.
+
+### New
+- **Rumble updates** in Settings › Controller › Vibration limits how often vibration changes are sent to a wireless controller: 25 per second by default, from 10 up to Unlimited. Lower it if your controls still stop responding for a moment during heavy vibration, raise it if vibration feels less detailed.
+- **Share diagnostics** and **Report a problem on GitHub** are now at the bottom of the stream menu too, so you can capture a problem without leaving the stream.
+
+### Fixes
+- In games with DualSense haptics, a wireless controller (seen on a DualShock 4 and the GameSir G8+) could stop responding for a few seconds while the stream carried on. Vibration changes were being sent to the controller up to 200 times a second, crowding out your button presses on its Bluetooth connection. They're now limited, which you won't feel.
+- Share diagnostics now logs when a controller stops responding, to help track down any remaining freezes.
+
 ## v0.14.3 (2026-11-25)
 
 Stops controllers and the phone vibrating non-stop in games with DualSense haptics, and adds a setting for how strongly your controller vibrates.
