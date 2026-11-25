@@ -2,6 +2,16 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.3 (2026-11-25)
+
+Stops controllers and the phone vibrating non-stop in games with DualSense haptics, and adds a setting for how strongly your controller vibrates.
+
+### New
+- **Controller vibration** in Settings › Controller › Vibration sets how strongly a controller's motors play rumble and haptics: Full (default), Medium or Light.
+
+### Fixes
+- In games with DualSense haptics, a controller or the phone (with touch controls) could vibrate constantly, even when nothing was happening. Very faint haptic textures, which a DualSense on a PS5 barely plays, are now ignored, haptics are a bit gentler overall, and vibration always stops when the game stops it.
+
 ## v0.14.2 (2026-11-25)
 
 Properly fixes the picture not coming back after you switch to another app and return to your stream, and makes shared diagnostics readable again.
