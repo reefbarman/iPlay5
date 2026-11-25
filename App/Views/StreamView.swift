@@ -1028,6 +1028,7 @@ struct StreamView: View {
 				} footer: {
 					Text("Screenshot mode keeps virtual controls and shortcuts visible while you frame the shot. Save screenshot saves a PNG to \(DeviceLayout.filesLocation), then returns the controls to normal.")
 				}
+				HelpSection()
 			}
 			.navigationTitle(console.name)
 			.navigationBarTitleDisplayMode(.inline)

@@ -23,6 +23,7 @@ With a controller, holding **Select + Start** for a second also opens the menu. 
 - **All settings.** Changes apply to the running stream. Video and network changes reconnect it, and are saved to the console if it has [its own settings](consoles-and-setup.md#per-console-settings).
 - **Controller Test** and **Controls Guide** (under Controller).
 - **Screenshots:** see below.
+- **Share diagnostics** and **Report a problem on GitHub**, so you can capture a problem without leaving the stream. See [Help and troubleshooting](troubleshooting.md#reporting-a-problem).
 
 ## Typing on your phone
 

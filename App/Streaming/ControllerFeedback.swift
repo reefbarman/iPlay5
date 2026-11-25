@@ -1,6 +1,7 @@
 import ChiakiKit
 import CoreHaptics
 import GameController
+import os
 import QuartzCore
 
 /// A PS5 adaptive trigger effect.
@@ -120,6 +121,18 @@ final class ControllerFeedback {
 		}
 	}
 
+	/// The Rumble updates setting: most updates per second to each controller motor
+	/// (100 or more: no limit, haptics arrive every 10 ms anyway)
+	var controllerRumbleRate: Double = 25 {
+		didSet {
+			let interval = controllerRumbleRate >= 100 ? 0 : 1 / max(1, controllerRumbleRate)
+			queue.async {
+				self.controllerInterval = interval
+				(self.handles + self.triggerMotors).forEach { $0.minInterval = interval }
+			}
+		}
+	}
+
 	private let queue = DispatchQueue(label: "iPlay5.controller-feedback", qos: .userInteractive)
 
 	// Main thread
@@ -145,6 +158,7 @@ final class ControllerFeedback {
 	private var motorsEnabled = true
 	private var phoneScale: Float = 1
 	private var controllerScale: Float = 1
+	private var controllerInterval: CFTimeInterval = 1.0 / 25
 	private var hapticScale: Float = 1
 	private var motorEffects: [TriggerEffect] = [.off, .off]
 	private var motorTriggerScale: Float = 1
@@ -153,6 +167,23 @@ final class ControllerFeedback {
 	private var hapticsSharpness: [Float] = [0.5, 0.5]
 	private var lastHaptics: CFTimeInterval = 0
 	private var watchdog: DispatchSourceTimer?
+
+	/// When rumble updates went to the controller, for ControllerInput's "went quiet" log
+	private static let controllerUpdateTimes = OSAllocatedUnfairLock(initialState: [CFTimeInterval]())
+
+	/// Any thread
+	fileprivate static func recordControllerUpdate(at time: CFTimeInterval) {
+		controllerUpdateTimes.withLock { times in
+			times.append(time)
+			// ~10 s at the throttled rate
+			if times.count > 512 { times.removeFirst(times.count - 256) }
+		}
+	}
+
+	/// Rumble updates sent to the controller between two `CACurrentMediaTime()`s. Any thread.
+	static func controllerUpdates(from start: CFTimeInterval, to end: CFTimeInterval) -> Int {
+		controllerUpdateTimes.withLock { times in times.reduce(0) { $0 + ($1 >= start && $1 < end ? 1 : 0) } }
+	}
 
 	// MARK: - Controller
 
@@ -183,6 +214,7 @@ final class ControllerFeedback {
 					triggerMotors = motors.count == 2 ? motors : []
 				}
 			}
+			(handles + triggerMotors).forEach { $0.minInterval = controllerInterval }
 			if handles.isEmpty { phone = Motor.phone(queue: queue) }
 			startWatchdog()
 			let summary = "\(handles.count) rumble motor(s), \(triggerMotors.count) trigger motor(s), phone haptics \(phone != nil ? "yes" : "no"), controller haptics [\(localities.map(\.rawValue).sorted().joined(separator: ", "))]"
@@ -506,6 +538,15 @@ private final class Motor {
 	/// The player is running (controllers stop it at zero)
 	private var playing = false
 	private var intensity: Float = 0
+	/// What the controller last got (-1: nothing yet)
+	private var sentIntensity: Float = -1
+	private var lastSent: CFTimeInterval = 0
+	private var sendScheduled = false
+	/// Shortest gap between updates to a controller (the Rumble updates setting).
+	/// Each update is a Bluetooth packet to the controller, on the same link as its input.
+	/// Haptics arrive every 10 ms per side; sending them all can starve the controller's
+	/// input for seconds (seen on a DualShock 4). Rumble motors can't follow faster anyway.
+	var minInterval: CFTimeInterval = 1.0 / 25
 	private var sharpness: Float = 0.5
 	private var needsRestart = false
 	private var lastRestart: CFTimeInterval = 0
@@ -555,6 +596,7 @@ private final class Motor {
 		try engine.start()
 		playing = false
 		if isController {
+			sentIntensity = -1
 			let event = CHHapticEvent(
 				eventType: .hapticContinuous,
 				parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 1)],
@@ -591,6 +633,7 @@ private final class Motor {
 		guard isController else {
 			return try player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
 		}
+		sentIntensity = intensity
 		guard intensity > 0 else {
 			if playing {
 				playing = false
@@ -605,6 +648,37 @@ private final class Motor {
 		try player.sendParameters(
 			[CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: intensity, relativeTime: 0)],
 			atTime: CHHapticTimeImmediate)
+	}
+
+	/// Sends the current values; to a controller at most every `minInterval`,
+	/// with the latest values going out when the interval is up
+	private func send() {
+		guard isController else { return apply() }
+		guard intensity != sentIntensity else { return }
+		let now = CACurrentMediaTime()
+		let wait = lastSent + minInterval - now
+		guard wait <= 0 else {
+			guard !sendScheduled else { return }
+			sendScheduled = true
+			queue.asyncAfter(deadline: .now() + wait) { [weak self] in
+				guard let self else { return }
+				self.sendScheduled = false
+				guard self.ensureRunning() else { return }
+				self.send()
+			}
+			return
+		}
+		lastSent = now
+		ControllerFeedback.recordControllerUpdate(at: now)
+		apply()
+	}
+
+	private func apply() {
+		do {
+			try update()
+		} catch {
+			logOnce(error)
+		}
 	}
 
 	/// Only the first failure, so a broken actuator doesn't flood the log every 10 ms
@@ -641,11 +715,7 @@ private final class Motor {
 		self.intensity = intensity
 		self.sharpness = sharpness
 		guard ensureRunning() else { return }
-		do {
-			try update()
-		} catch {
-			logOnce(error)
-		}
+		send()
 	}
 
 	/// A single short click

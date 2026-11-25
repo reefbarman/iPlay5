@@ -2,7 +2,7 @@
 
 ## Reporting a problem
 
-Right after the problem happens, without closing the app, open **Settings › Share diagnostics** and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). **Report a problem on GitHub** in the same section opens a new issue.
+Right after the problem happens, without closing the app, open **Settings › Share diagnostics** (or **Share diagnostics** at the bottom of the stream menu, if you're mid-stream) and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). **Report a problem on GitHub** in the same section opens a new issue.
 
 The report is plain text, so you can check it before sending. It has the app version, your phone model, screen details, connected controllers, settings and the app's logs since it was opened. IP and MAC addresses, keys, account IDs, console names and remote addresses are removed.
 

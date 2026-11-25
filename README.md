@@ -67,7 +67,7 @@ Open **Controls Guide** from Settings › Controller or the in-stream menu. The 
 
 ## Reporting a problem
 
-Right after the problem happens (without closing the app), open **Settings › Share diagnostics** and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). It has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. It's plain text, so you can check it before sending. [Help and troubleshooting](docs/troubleshooting.md) has more tips, including the Controller Test and known limitations.
+Right after the problem happens (without closing the app), open **Settings › Share diagnostics** (also at the bottom of the stream menu) and attach the file to a [GitHub issue](https://github.com/reefbarman/iPlay5/issues/new). It has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. It's plain text, so you can check it before sending. [Help and troubleshooting](docs/troubleshooting.md) has more tips, including the Controller Test and known limitations.
 
 ## Build from source
 

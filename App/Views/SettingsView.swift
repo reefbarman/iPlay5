@@ -244,6 +244,9 @@ private struct ControllerSettingsPage: View {
 					ForEach(ControllerVibration.allCases) { Text($0.label).tag($0) }
 				}
 				.disabled(!settings.rumble)
+				LabeledSlider(title: "Rumble updates", value: $settings.controllerRumbleRate, range: 10...100, step: 5,
+					valueText: settings.controllerRumbleRate >= 100 ? "Unlimited" : "\(Int(settings.controllerRumbleRate)) per second")
+					.disabled(!settings.rumble)
 				// iPads have no vibration motor
 				if Self.deviceHasHaptics {
 					Picker("Phone haptics", selection: $settings.phoneHaptics) {
@@ -259,6 +262,7 @@ private struct ControllerSettingsPage: View {
 				} else {
 					Text("Rumble turns controller vibration on or off. Controller vibration sets how strongly the controller's motors play it.")
 				}
+				Text("Rumble updates limits how often vibration changes are sent to a wireless controller. They share its Bluetooth connection with your button presses, so too many can make the controls stop responding for a moment during heavy vibration. Lower it if that happens, raise it if vibration feels less detailed.")
 			}
 
 			Section {
@@ -588,38 +592,14 @@ struct ConsoleSettingsView: View {
 
 struct SettingsView: View {
 	@Environment(SettingsStore.self) private var store
-	@Environment(ConsoleStore.self) private var consoles
 	@Environment(\.dismiss) private var dismiss
-	@State private var isPreparingDiagnostics = false
-	@State private var diagnosticsShare: DiagnosticsShare?
-	@State private var showDiagnosticsError = false
 
 	var body: some View {
 		@Bindable var store = store
 		NavigationStack {
 			Form {
 				StreamSettingsForm(settings: $store.settings, showsControllerTest: true)
-
-				Section {
-					Button {
-						isPreparingDiagnostics = true
-					} label: {
-						if isPreparingDiagnostics {
-							ProgressView("Preparing diagnostics…")
-						} else {
-							Label("Share diagnostics", systemImage: "ladybug")
-						}
-					}
-					.disabled(isPreparingDiagnostics || diagnosticsShare != nil)
-					Link(destination: URL(string: "https://github.com/reefbarman/iPlay5/issues/new")!) {
-						Label("Report a problem on GitHub", systemImage: "exclamationmark.bubble")
-					}
-				} header: {
-					Text("Help")
-				} footer: {
-					Text("The report has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. Share it before closing the app, so the logs still cover the problem.")
-				}
-
+				HelpSection()
 				AboutSection()
 			}
 			.navigationTitle("Settings")
@@ -627,18 +607,47 @@ struct SettingsView: View {
 			.toolbar {
 				ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
 			}
-			.task(id: isPreparingDiagnostics) {
-				guard isPreparingDiagnostics else { return }
-				await prepareDiagnostics()
+		}
+	}
+}
+
+/// Share diagnostics and report a problem, in Settings and the in-stream menu
+struct HelpSection: View {
+	@Environment(SettingsStore.self) private var store
+	@Environment(ConsoleStore.self) private var consoles
+	@State private var isPreparingDiagnostics = false
+	@State private var showDiagnosticsError = false
+	@State private var anchor = PresentationAnchor.Box()
+
+	var body: some View {
+		Section {
+			Button {
+				isPreparingDiagnostics = true
+			} label: {
+				if isPreparingDiagnostics {
+					ProgressView("Preparing diagnostics…")
+				} else {
+					Label("Share diagnostics", systemImage: "ladybug")
+				}
 			}
-			.sheet(item: $diagnosticsShare) { share in
-				share
+			.disabled(isPreparingDiagnostics)
+			.background(PresentationAnchor(box: anchor))
+			Link(destination: URL(string: "https://github.com/reefbarman/iPlay5/issues/new")!) {
+				Label("Report a problem on GitHub", systemImage: "exclamationmark.bubble")
 			}
-			.alert("Couldn't prepare diagnostics", isPresented: $showDiagnosticsError) {
-				Button("OK", role: .cancel) {}
-			} message: {
-				Text("Try sharing diagnostics again.")
-			}
+		} header: {
+			Text("Help")
+		} footer: {
+			Text("The report has your phone model, screen details, settings and the app's logs since it was opened. IP addresses, keys, account IDs and console names are removed. Share it before closing the app, so the logs still cover the problem.")
+		}
+		.task(id: isPreparingDiagnostics) {
+			guard isPreparingDiagnostics else { return }
+			await prepareDiagnostics()
+		}
+		.alert("Couldn't prepare diagnostics", isPresented: $showDiagnosticsError) {
+			Button("OK", role: .cancel) {}
+		} message: {
+			Text("Try sharing diagnostics again.")
 		}
 	}
 
@@ -651,22 +660,44 @@ struct SettingsView: View {
 		do {
 			let url = try await report.writeFile()
 			guard !Task.isCancelled else { return }
-			diagnosticsShare = DiagnosticsShare(url: url)
+			if !presentShareSheet(url) { showDiagnosticsError = true }
 		} catch {
 			guard !Task.isCancelled else { return }
 			showDiagnosticsError = true
 		}
 		isPreparingDiagnostics = false
 	}
+
+	/// Presented with UIKit rather than `.sheet`: a sheet attached to a Form row closes
+	/// again as soon as the row redraws (the button's label changes back right after)
+	private func presentShareSheet(_ url: URL) -> Bool {
+		guard let view = anchor.view, var top = view.window?.rootViewController else { return false }
+		while let presented = top.presentedViewController, !presented.isBeingDismissed { top = presented }
+		let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+		controller.popoverPresentationController?.sourceView = view
+		controller.popoverPresentationController?.sourceRect = view.bounds
+		top.present(controller, animated: true)
+		return true
+	}
 }
 
-private struct DiagnosticsShare: UIViewControllerRepresentable, Identifiable {
-	let url: URL
-	var id: URL { url }
-
-	func makeUIViewController(context: Context) -> UIActivityViewController {
-		UIActivityViewController(activityItems: [url], applicationActivities: nil)
+/// A plain UIKit view behind a SwiftUI control, to present UIKit sheets from the
+/// control's own window (the Duo can show two) and anchor popovers on iPad
+private struct PresentationAnchor: UIViewRepresentable {
+	final class Box {
+		weak var view: UIView?
 	}
 
-	func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
+	let box: Box
+
+	func makeUIView(context: Context) -> UIView {
+		let view = UIView()
+		view.isUserInteractionEnabled = false
+		box.view = view
+		return view
+	}
+
+	func updateUIView(_ view: UIView, context: Context) {
+		box.view = view
+	}
 }

@@ -292,6 +292,9 @@ struct StreamSettings: Codable, Equatable {
 	var phoneHaptics: PhoneHaptics = .full
 	/// How strongly a controller with motors plays rumble and haptics
 	var controllerVibration: ControllerVibration = .full
+	/// Most rumble updates per second sent to a controller's motors, 10...100. Each is a
+	/// Bluetooth packet on the link the controller's input uses; too many can stall input.
+	var controllerRumbleRate: Double = 25
 	/// Send the phone's mic to the console for game and party chat
 	var microphone: Bool = false
 	/// Keep the game audio playing in another app. iOS keeps the app running while it plays,
@@ -388,6 +391,7 @@ struct StreamSettings: Codable, Equatable {
 		rumble = try c.decodeIfPresent(Bool.self, forKey: .rumble) ?? d.rumble
 		phoneHaptics = (try? c.decodeIfPresent(PhoneHaptics.self, forKey: .phoneHaptics)) ?? d.phoneHaptics
 		controllerVibration = (try? c.decodeIfPresent(ControllerVibration.self, forKey: .controllerVibration)) ?? d.controllerVibration
+		controllerRumbleRate = min(100, max(10, try c.decodeIfPresent(Double.self, forKey: .controllerRumbleRate) ?? d.controllerRumbleRate))
 		microphone = try c.decodeIfPresent(Bool.self, forKey: .microphone) ?? d.microphone
 		backgroundAudio = try c.decodeIfPresent(Bool.self, forKey: .backgroundAudio) ?? d.backgroundAudio
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
