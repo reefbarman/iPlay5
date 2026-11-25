@@ -19,6 +19,14 @@
       "screenshots": [],
       "versions": [
         {
+          "version": "0.14.4",
+          "date": "2026-11-25T07:07:06Z",
+          "downloadURL": "https://github.com/reefbarman/iPlay5/releases/download/v0.14.4/iPlay5.ipa",
+          "size": 6120496,
+          "minOSVersion": "17.0",
+          "localizedDescription": "See the release notes on GitHub."
+        },
+        {
           "version": "0.14.3",
           "date": "2026-11-25T04:08:32Z",
           "downloadURL": "https://github.com/reefbarman/iPlay5/releases/download/v0.14.3/iPlay5.ipa",
