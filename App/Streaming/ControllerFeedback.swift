@@ -112,6 +112,14 @@ final class ControllerFeedback {
 		}
 	}
 
+	/// The Controller vibration setting: how strongly a controller's motors play it all, 0...1
+	var controllerVibrationScale: Float = 1 {
+		didSet {
+			let scale = controllerVibrationScale
+			queue.async { self.controllerScale = scale }
+		}
+	}
+
 	private let queue = DispatchQueue(label: "iPlay5.controller-feedback", qos: .userInteractive)
 
 	// Main thread
@@ -136,6 +144,7 @@ final class ControllerFeedback {
 	private var screenTriggers: [Float] = [0, 0]
 	private var motorsEnabled = true
 	private var phoneScale: Float = 1
+	private var controllerScale: Float = 1
 	private var hapticScale: Float = 1
 	private var motorEffects: [TriggerEffect] = [.off, .off]
 	private var motorTriggerScale: Float = 1
@@ -335,7 +344,7 @@ final class ControllerFeedback {
 	private func updateTriggerMotors() {
 		let onTriggers = triggerMotors.count == 2
 		guard onTriggers || phone != nil else { return }
-		let scale = motorsEnabled ? motorTriggerScale : 0
+		let scale = motorsEnabled ? motorTriggerScale * (onTriggers ? controllerScale : 1) : 0
 		for side in 0..<2 {
 			let p = max(triggerValues[side], screenTriggers[side])
 			var out: (Float, Float) = (0, 0.5)
@@ -398,16 +407,22 @@ final class ControllerFeedback {
 		}
 	}
 
-	/// Peak level (0...1) and dominant frequency from zero crossings (0 if unknown)
+	/// Below this the signal is the faint texture a DualSense's voice coils barely
+	/// reproduce. A rumble motor or the Taptic Engine turns it into a constant buzz.
+	private static let noiseGate: Float = 0.03
+
+	/// Level (0...1, from the average loudness, so isolated spikes don't count) and
+	/// dominant frequency from zero crossings (0 if unknown). Like chiaki-ng's
+	/// haptics-to-rumble, which averages the packet and ignores near-silence.
 	private static func analyse(_ samples: UnsafePointer<Int16>, frames: Int, channel: Int) -> (level: Float, hz: Float) {
-		var peak: Int32 = 0
+		var sum: Int = 0
 		var crossings = 0
 		var lastSign: Int32 = 0
 		// Ignore crossings in the noise around zero
 		let threshold: Int32 = 400
 		for i in 0..<frames {
 			let v = Int32(samples[i * 2 + channel])
-			peak = max(peak, abs(v))
+			sum += Int(abs(v))
 			let sign: Int32 = v > threshold ? 1 : (v < -threshold ? -1 : 0)
 			if sign != 0 {
 				if lastSign != 0, sign != lastSign { crossings += 1 }
@@ -415,7 +430,8 @@ final class ControllerFeedback {
 			}
 		}
 		let seconds = Float(frames) / 3000
-		return (min(1, Float(peak) / 16_384), crossings > 0 ? Float(crossings) / 2 / seconds : 0)
+		let level = min(1, Float(sum) / Float(frames) / 16_384)
+		return (level < noiseGate ? 0 : level, crossings > 0 ? Float(crossings) / 2 / seconds : 0)
 	}
 
 	/// DualSense haptics mostly sit between ~50 Hz (thuds) and ~350 Hz (textures, clicks)
@@ -432,12 +448,12 @@ final class ControllerFeedback {
 		if phone != nil {
 			flushPhone()
 		} else if handles.count == 2 {
-			handles[0].set(intensity: l, sharpness: sharpness.0)
-			handles[1].set(intensity: r, sharpness: sharpness.1)
+			handles[0].set(intensity: l * controllerScale, sharpness: sharpness.0)
+			handles[1].set(intensity: r * controllerScale, sharpness: sharpness.1)
 		} else {
 			let total = l + r
 			let blended = total > 0 ? (sharpness.0 * l + sharpness.1 * r) / total : 0.5
-			handles[0].set(intensity: max(l, r), sharpness: blended)
+			handles[0].set(intensity: max(l, r) * controllerScale, sharpness: blended)
 		}
 	}
 
@@ -618,8 +634,10 @@ private final class Motor {
 	func set(intensity: Float, sharpness: Float) {
 		let intensity = min(1, max(0, intensity))
 		let sharpness = min(1, max(0, sharpness))
-		// Each change is a packet to the controller: skip ones you couldn't feel
-		guard abs(intensity - self.intensity) > 0.01 || abs(sharpness - self.sharpness) > 0.03 else { return }
+		// Each change is a packet to the controller: skip ones you couldn't feel,
+		// but always stop, or a small leftover level keeps the motor running
+		let stopping = intensity == 0 && self.intensity > 0
+		guard stopping || abs(intensity - self.intensity) > 0.01 || abs(sharpness - self.sharpness) > 0.03 else { return }
 		self.intensity = intensity
 		self.sharpness = sharpness
 		guard ensureRunning() else { return }

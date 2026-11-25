@@ -21,7 +21,9 @@ One controller at a time. Local co-op with several controllers isn't supported.
 
 ## Vibration and feedback
 
-Settings › Controller › Vibration. **Rumble** is the master switch for everything below (on by default).
+Settings › Controller › Vibration. **Rumble** is the master switch for everything below (on by default). **Controller vibration** sets how strongly a controller's motors play rumble and haptics: Full (default), Medium or Light.
+
+iOS can't play DualSense haptics through the DualSense's own haptic actuators, so iPlay5 turns them into rumble. Very faint haptic textures, which a DualSense on a PS5 barely plays, are ignored so they don't become a constant buzz.
 
 **DualSense**
 - Haptics play on the grips with the game's texture and pitch.
