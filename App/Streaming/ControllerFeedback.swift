@@ -133,6 +133,17 @@ final class ControllerFeedback {
 		}
 	}
 
+	/// The Faint haptics cutoff setting, 0...1 of full strength. Below it a DualSense
+	/// haptics signal is the faint texture its voice coils barely reproduce, which a
+	/// rumble motor or the Taptic Engine turns into a constant buzz. Too high and gentle
+	/// sustained effects (an engine idling) are lost.
+	var hapticsCutoff: Float = 0.03 {
+		didSet {
+			let cutoff = hapticsCutoff
+			queue.async { self.noiseGate = cutoff }
+		}
+	}
+
 	/// The Rumble compatibility mode setting: one combined motor for both grips, kept
 	/// running at zero instead of stopped and started. For controllers whose input
 	/// stalls during rumble (seen on a GameSir G8+ as a DualShock 4).
@@ -170,6 +181,7 @@ final class ControllerFeedback {
 	private var controllerScale: Float = 1
 	private var controllerInterval: CFTimeInterval = 1.0 / 25
 	private var hapticScale: Float = 1
+	private var noiseGate: Float = 0.03
 	private var motorEffects: [TriggerEffect] = [.off, .off]
 	private var motorTriggerScale: Float = 1
 	private var triggerValues: [Float] = [0, 0]
@@ -450,13 +462,12 @@ final class ControllerFeedback {
 			for (side, hz) in [left.hz, right.hz].enumerated() where hz > 0 {
 				self.hapticsSharpness[side] = self.hapticsSharpness[side] * 0.6 + Self.sharpness(hz: hz) * 0.4
 			}
-			self.drive(left: left.level, right: right.level, sharpness: (self.hapticsSharpness[0], self.hapticsSharpness[1]))
+			let gate = self.noiseGate
+			self.drive(left: left.level < gate ? 0 : left.level, right: right.level < gate ? 0 : right.level,
+				sharpness: (self.hapticsSharpness[0], self.hapticsSharpness[1]))
 		}
 	}
 
-	/// Below this the signal is the faint texture a DualSense's voice coils barely
-	/// reproduce. A rumble motor or the Taptic Engine turns it into a constant buzz.
-	private static let noiseGate: Float = 0.03
 
 	/// Level (0...1, from the average loudness, so isolated spikes don't count) and
 	/// dominant frequency from zero crossings (0 if unknown). Like chiaki-ng's
@@ -478,7 +489,7 @@ final class ControllerFeedback {
 		}
 		let seconds = Float(frames) / 3000
 		let level = min(1, Float(sum) / Float(frames) / 16_384)
-		return (level < noiseGate ? 0 : level, crossings > 0 ? Float(crossings) / 2 / seconds : 0)
+		return (level, crossings > 0 ? Float(crossings) / 2 / seconds : 0)
 	}
 
 	/// DualSense haptics mostly sit between ~50 Hz (thuds) and ~350 Hz (textures, clicks)

@@ -336,6 +336,7 @@ final class StreamSession {
 		input.feedback.controllerVibrationScale = settings.controllerVibration.scale
 		input.feedback.controllerRumbleRate = settings.controllerRumbleRate
 		input.feedback.compatibilityMode = settings.rumbleCompatibility
+		input.feedback.hapticsCutoff = Float(settings.hapticsCutoff / 100)
 		input.onPad = { [weak self] pad in
 			self?.physicalPad = pad
 			self?.sendPad()
@@ -588,6 +589,7 @@ final class StreamSession {
 		input.feedback.controllerVibrationScale = new.controllerVibration.scale
 		input.feedback.controllerRumbleRate = new.controllerRumbleRate
 		input.feedback.compatibilityMode = new.rumbleCompatibility
+		input.feedback.hapticsCutoff = Float(new.hapticsCutoff / 100)
 		renderer?.setDisplayMode(new.displayMode)
 		if needsReconnect, handle != nil || waitingToApplySettings, !goingToSleep {
 			restartForSettings()

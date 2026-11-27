@@ -27,6 +27,8 @@ Settings › Controller › Vibration. **Rumble** is the master switch for every
 
 **Rumble compatibility mode** (off by default) drives both grips together as one motor and keeps it running at zero instead of stopping and starting it, which sends the controller fewer and simpler vibration messages. Try it if your controls still freeze during heavy vibration. With it on, left and right rumble feel the same.
 
+**Faint haptics cutoff** (3% by default, from Off up to 10%) ignores DualSense haptics quieter than that share of full strength, so faint textures don't turn into a constant buzz. If a gentle effect such as a boat or car engine doesn't vibrate at all, lower it. If your controller or phone buzzes when nothing is happening, raise it.
+
 iOS can't play DualSense haptics through the DualSense's own haptic actuators, so iPlay5 turns them into rumble. Very faint haptic textures, which a DualSense on a PS5 barely plays, are ignored so they don't become a constant buzz.
 
 **DualSense**

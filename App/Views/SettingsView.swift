@@ -249,6 +249,9 @@ private struct ControllerSettingsPage: View {
 					.disabled(!settings.rumble)
 				Toggle("Rumble compatibility mode", isOn: $settings.rumbleCompatibility)
 					.disabled(!settings.rumble)
+				LabeledSlider(title: "Faint haptics cutoff", value: $settings.hapticsCutoff, range: 0...10, step: 0.5,
+					valueText: settings.hapticsCutoff <= 0 ? "Off" : "\(settings.hapticsCutoff.formatted(.number.precision(.fractionLength(0...1))))%")
+					.disabled(!settings.rumble)
 				// iPads have no vibration motor
 				if Self.deviceHasHaptics {
 					Picker("Phone haptics", selection: $settings.phoneHaptics) {
@@ -266,6 +269,7 @@ private struct ControllerSettingsPage: View {
 				}
 				Text("Rumble updates limits how often vibration changes are sent to a wireless controller. They share its Bluetooth connection with your button presses, so too many can make the controls stop responding for a moment during heavy vibration. Lower it if that happens, raise it if vibration feels less detailed.")
 				Text("Rumble compatibility mode drives both grips together as one motor and keeps it running instead of stopping and starting it. Try it if your controls still freeze during vibration. Left and right rumble feel the same with it on.")
+				Text("Faint haptics cutoff ignores DualSense haptics quieter than this share of full strength, so faint textures don't become a constant buzz. Lower it if gentle effects, like a boat or car engine, don't vibrate at all. Raise it if the controller or phone buzzes when nothing is happening.")
 			}
 
 			Section {

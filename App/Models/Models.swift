@@ -298,6 +298,9 @@ struct StreamSettings: Codable, Equatable {
 	/// One combined rumble motor, kept running at zero, for controllers whose input
 	/// stalls during rumble
 	var rumbleCompatibility: Bool = false
+	/// DualSense haptics quieter than this percentage of full strength are ignored
+	/// rather than turned into rumble, 0...10 (0 plays everything)
+	var hapticsCutoff: Double = 3
 	/// Send the phone's mic to the console for game and party chat
 	var microphone: Bool = false
 	/// Keep the game audio playing in another app. iOS keeps the app running while it plays,
@@ -396,6 +399,7 @@ struct StreamSettings: Codable, Equatable {
 		controllerVibration = (try? c.decodeIfPresent(ControllerVibration.self, forKey: .controllerVibration)) ?? d.controllerVibration
 		controllerRumbleRate = min(100, max(10, try c.decodeIfPresent(Double.self, forKey: .controllerRumbleRate) ?? d.controllerRumbleRate))
 		rumbleCompatibility = try c.decodeIfPresent(Bool.self, forKey: .rumbleCompatibility) ?? d.rumbleCompatibility
+		hapticsCutoff = min(10, max(0, try c.decodeIfPresent(Double.self, forKey: .hapticsCutoff) ?? d.hapticsCutoff))
 		microphone = try c.decodeIfPresent(Bool.self, forKey: .microphone) ?? d.microphone
 		backgroundAudio = try c.decodeIfPresent(Bool.self, forKey: .backgroundAudio) ?? d.backgroundAudio
 		selectIsTouchpad = try c.decodeIfPresent(Bool.self, forKey: .selectIsTouchpad) ?? d.selectIsTouchpad
