@@ -2,6 +2,16 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.6 (2026-11-27)
+
+Lets you choose how faint a DualSense haptic effect can be before it's ignored, so gentle effects like a boat engine can vibrate again.
+
+### New
+- **Faint haptics cutoff** in Settings › Controller › Vibration sets how quiet a DualSense haptic effect can be before iPlay5 ignores it instead of turning it into rumble: 3% by default, from Off up to 10%. Lower it if gentle effects, like a boat or car engine, don't vibrate at all. Raise it if the controller or phone buzzes when nothing is happening.
+
+### Fixes
+- Gentle, steady DualSense haptics (reported while driving a boat in GTA 6) could be dropped entirely while adaptive triggers kept working. Lowering the new Faint haptics cutoff lets them through.
+
 ## v0.14.5 (2026-11-27)
 
 Adds a fix for controllers that still freeze for a moment during heavy vibration.
