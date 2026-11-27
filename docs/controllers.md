@@ -25,6 +25,8 @@ Settings › Controller › Vibration. **Rumble** is the master switch for every
 
 **Rumble updates** limits how often vibration changes are sent to a wireless controller: 25 per second by default, from 10 up to Unlimited. Vibration changes share the controller's Bluetooth connection with your button presses, so sending too many during heavy vibration can make the controls stop responding for a moment while the picture and sound carry on. If that happens, lower it. If vibration feels less detailed than you'd like, raise it.
 
+**Rumble compatibility mode** (off by default) drives both grips together as one motor and keeps it running at zero instead of stopping and starting it, which sends the controller fewer and simpler vibration messages. Try it if your controls still freeze during heavy vibration. With it on, left and right rumble feel the same.
+
 iOS can't play DualSense haptics through the DualSense's own haptic actuators, so iPlay5 turns them into rumble. Very faint haptic textures, which a DualSense on a PS5 barely plays, are ignored so they don't become a constant buzz.
 
 **DualSense**

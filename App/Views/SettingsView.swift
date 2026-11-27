@@ -247,6 +247,8 @@ private struct ControllerSettingsPage: View {
 				LabeledSlider(title: "Rumble updates", value: $settings.controllerRumbleRate, range: 10...100, step: 5,
 					valueText: settings.controllerRumbleRate >= 100 ? "Unlimited" : "\(Int(settings.controllerRumbleRate)) per second")
 					.disabled(!settings.rumble)
+				Toggle("Rumble compatibility mode", isOn: $settings.rumbleCompatibility)
+					.disabled(!settings.rumble)
 				// iPads have no vibration motor
 				if Self.deviceHasHaptics {
 					Picker("Phone haptics", selection: $settings.phoneHaptics) {
@@ -263,6 +265,7 @@ private struct ControllerSettingsPage: View {
 					Text("Rumble turns controller vibration on or off. Controller vibration sets how strongly the controller's motors play it.")
 				}
 				Text("Rumble updates limits how often vibration changes are sent to a wireless controller. They share its Bluetooth connection with your button presses, so too many can make the controls stop responding for a moment during heavy vibration. Lower it if that happens, raise it if vibration feels less detailed.")
+				Text("Rumble compatibility mode drives both grips together as one motor and keeps it running instead of stopping and starting it. Try it if your controls still freeze during vibration. Left and right rumble feel the same with it on.")
 			}
 
 			Section {

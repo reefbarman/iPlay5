@@ -335,6 +335,7 @@ final class StreamSession {
 		input.feedback.phoneHapticsScale = settings.phoneHaptics.scale
 		input.feedback.controllerVibrationScale = settings.controllerVibration.scale
 		input.feedback.controllerRumbleRate = settings.controllerRumbleRate
+		input.feedback.compatibilityMode = settings.rumbleCompatibility
 		input.onPad = { [weak self] pad in
 			self?.physicalPad = pad
 			self?.sendPad()
@@ -586,6 +587,7 @@ final class StreamSession {
 		input.feedback.phoneHapticsScale = new.phoneHaptics.scale
 		input.feedback.controllerVibrationScale = new.controllerVibration.scale
 		input.feedback.controllerRumbleRate = new.controllerRumbleRate
+		input.feedback.compatibilityMode = new.rumbleCompatibility
 		renderer?.setDisplayMode(new.displayMode)
 		if needsReconnect, handle != nil || waitingToApplySettings, !goingToSleep {
 			restartForSettings()

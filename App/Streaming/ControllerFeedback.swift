@@ -133,6 +133,16 @@ final class ControllerFeedback {
 		}
 	}
 
+	/// The Rumble compatibility mode setting: one combined motor for both grips, kept
+	/// running at zero instead of stopped and started. For controllers whose input
+	/// stalls during rumble (seen on a GameSir G8+ as a DualShock 4).
+	var compatibilityMode = false {
+		didSet {
+			guard compatibilityMode != oldValue, let controller else { return }
+			attach(controller)
+		}
+	}
+
 	private let queue = DispatchQueue(label: "iPlay5.controller-feedback", qos: .userInteractive)
 
 	// Main thread
@@ -201,13 +211,18 @@ final class ControllerFeedback {
 		let haptics = controller?.haptics
 		let localities = haptics?.supportedLocalities ?? []
 		let wantTriggers = !isDualSense && localities.contains(.leftTrigger) && localities.contains(.rightTrigger)
+		let compatible = compatibilityMode
 		let (summary, emulates): (String, Bool) = queue.sync {
 			if let haptics {
-				if localities.contains(.leftHandle) && localities.contains(.rightHandle) {
+				if compatible {
+					// One engine for both grips: one update per change instead of one per side
+					let locality: GCHapticsLocality = localities.contains(.handles) ? .handles : .default
+					handles = [Motor(haptics: haptics, locality: locality, keepsRunning: true, queue: queue)].compactMap { $0 }
+				} else if localities.contains(.leftHandle) && localities.contains(.rightHandle) {
 					handles = [.leftHandle, .rightHandle].compactMap { Motor(haptics: haptics, locality: $0, queue: queue) }
 				}
-				if handles.count != 2 {
-					handles = [Motor(haptics: haptics, locality: .default, queue: queue)].compactMap { $0 }
+				if handles.isEmpty || (!compatible && handles.count != 2) {
+					handles = [Motor(haptics: haptics, locality: .default, keepsRunning: compatible, queue: queue)].compactMap { $0 }
 				}
 				if wantTriggers {
 					let motors = [GCHapticsLocality.leftTrigger, .rightTrigger].compactMap { Motor(haptics: haptics, locality: $0, queue: queue) }
@@ -217,7 +232,7 @@ final class ControllerFeedback {
 			(handles + triggerMotors).forEach { $0.minInterval = controllerInterval }
 			if handles.isEmpty { phone = Motor.phone(queue: queue) }
 			startWatchdog()
-			let summary = "\(handles.count) rumble motor(s), \(triggerMotors.count) trigger motor(s), phone haptics \(phone != nil ? "yes" : "no"), controller haptics [\(localities.map(\.rawValue).sorted().joined(separator: ", "))]"
+			let summary = "\(handles.count) rumble motor(s)\(compatible ? " (compatibility mode)" : ""), \(triggerMotors.count) trigger motor(s), phone haptics \(phone != nil ? "yes" : "no"), controller haptics [\(localities.map(\.rawValue).sorted().joined(separator: ", "))]"
 			return (summary, triggerMotors.count == 2 || phone != nil)
 		}
 		emulatesTriggers = emulates
@@ -534,6 +549,9 @@ private final class Motor {
 	private let name: String
 	/// A game controller's actuator rather than the phone's Taptic Engine
 	private let isController: Bool
+	/// A controller's player keeps running at zero instead of stopping and starting
+	/// (Rumble compatibility mode)
+	private let keepsRunning: Bool
 	private var player: CHHapticPatternPlayer?
 	/// The player is running (controllers stop it at zero)
 	private var playing = false
@@ -553,12 +571,12 @@ private final class Motor {
 	private var stopped = false
 	private var loggedError = false
 
-	convenience init?(haptics: GCDeviceHaptics, locality: GCHapticsLocality, queue: DispatchQueue) {
+	convenience init?(haptics: GCDeviceHaptics, locality: GCHapticsLocality, keepsRunning: Bool = false, queue: DispatchQueue) {
 		guard let engine = haptics.createEngine(withLocality: locality) else {
 			log.error("Haptics (\(locality.rawValue, privacy: .public)): the controller has no engine for it")
 			return nil
 		}
-		self.init(engine: engine, name: locality.rawValue, isController: true, queue: queue)
+		self.init(engine: engine, name: locality.rawValue, isController: true, keepsRunning: keepsRunning, queue: queue)
 	}
 
 	/// The phone's Taptic Engine, if it has one
@@ -575,11 +593,12 @@ private final class Motor {
 		}
 	}
 
-	init?(engine: CHHapticEngine, name: String, isController: Bool, queue: DispatchQueue) {
+	init?(engine: CHHapticEngine, name: String, isController: Bool, keepsRunning: Bool = false, queue: DispatchQueue) {
 		self.engine = engine
 		self.queue = queue
 		self.name = name
 		self.isController = isController
+		self.keepsRunning = keepsRunning
 		engine.isAutoShutdownEnabled = false
 		// Interruptions (backgrounding, a server reset): start again on the next update
 		engine.stoppedHandler = { [weak self] _ in queue.async { self?.needsRestart = true } }
@@ -601,7 +620,9 @@ private final class Motor {
 				eventType: .hapticContinuous,
 				parameters: [CHHapticEventParameter(parameterID: .hapticIntensity, value: 1)],
 				relativeTime: 0, duration: TimeInterval(GCHapticDurationInfinite))
-			player = try engine.makePlayer(with: CHHapticPattern(events: [event], parameters: []))
+			// Starts silent; the intensity control follows the game from here
+			let silent = keepsRunning ? [CHHapticDynamicParameter(parameterID: .hapticIntensityControl, value: 0, relativeTime: 0)] : []
+			player = try engine.makePlayer(with: CHHapticPattern(events: [event], parameters: silent))
 			try update()
 			return
 		}
@@ -634,7 +655,7 @@ private final class Motor {
 			return try player.sendParameters(parameters, atTime: CHHapticTimeImmediate)
 		}
 		sentIntensity = intensity
-		guard intensity > 0 else {
+		guard intensity > 0 || keepsRunning else {
 			if playing {
 				playing = false
 				try player.stop(atTime: CHHapticTimeImmediate)
