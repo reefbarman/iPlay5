@@ -2,6 +2,13 @@
 
 Every iPlay5 release, written for players. The same notes are on each [GitHub release](https://github.com/reefbarman/iPlay5/releases). For how each feature works, see the [feature guides](docs/README.md).
 
+## v0.14.5 (2026-11-27)
+
+Adds a fix for controllers that still freeze for a moment during heavy vibration.
+
+### New
+- **Rumble compatibility mode** in Settings › Controller › Vibration drives both grips together as one motor and keeps it running instead of stopping and starting it, so the controller gets fewer and simpler vibration messages. Turn it on if your controls still freeze during heavy vibration (seen on the GameSir G8+). It's off by default, and with it on left and right rumble feel the same.
+
 ## v0.14.4 (2026-11-25)
 
 Fixes controls freezing for a few seconds mid-game while the picture and sound keep going, and makes it easier to share diagnostics from inside a stream.
